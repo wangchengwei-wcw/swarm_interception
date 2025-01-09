@@ -42,3 +42,4 @@ docker/artifacts/
 **/generated/*
 
 assets/*
+.env

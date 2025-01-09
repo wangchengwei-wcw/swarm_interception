@@ -1,5 +1,3 @@
-"""Configuration for the quadcopters"""
-
 from __future__ import annotations
 
 import omni.isaac.lab.sim as sim_utils
@@ -7,10 +5,8 @@ from omni.isaac.lab.actuators import ImplicitActuatorCfg
 from omni.isaac.lab.assets import ArticulationCfg
 from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 
-##
-# Configuration
-##
 
+"""Configuration for the Crazyflie quadcopter"""
 CRAZYFLIE_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
     spawn=sim_utils.UsdFileCfg(
@@ -49,4 +45,3 @@ CRAZYFLIE_CFG = ArticulationCfg(
         ),
     },
 )
-"""Configuration for the Crazyflie quadcopter."""
