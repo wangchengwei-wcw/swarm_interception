@@ -15,7 +15,7 @@ from omni.isaac.lab.utils import configclass
 from omni.isaac.lab.utils.math import subtract_frame_transforms
 from omni.isaac.lab.markers import CUBOID_MARKER_CFG  # isort: skip
 
-from quadcopter import CRAZYFLIE_CFG  # isort: skip
+from quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils import quat_to_ang_between_z_body_and_z_world
 
 
@@ -123,6 +123,7 @@ class QuadcopterEnv(DirectRLEnv):
         # Get specific body indices
         self._body_id = self._robot.find_bodies("body")[0]
         self._robot_mass = self._robot.root_physx_view.get_masses()[0].sum()
+        self._robot_inertia = self._robot.root_physx_view.get_inertias()[0]
         self._gravity_magnitude = torch.tensor(
             self.sim.cfg.gravity, device=self.device
         ).norm()

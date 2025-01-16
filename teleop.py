@@ -52,12 +52,10 @@ from omni.isaac.lab_tasks.utils import parse_env_cfg
 
 
 def delta_pose_to_action(delta_pose: np.ndarray) -> np.ndarray:
-    action = np.zeros(4)
+    action = np.array([-1.0, 0.0, 0.0, 0.0])
 
     if delta_pose[4] > 0:
         action[0] = 0.1 * args_cli.sensitivity
-    elif delta_pose[4] < 0:
-        action[0] = -0.1 * args_cli.sensitivity
 
     if delta_pose[0] > 0:
         action[2] = 0.001 * args_cli.sensitivity
