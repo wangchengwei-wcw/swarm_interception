@@ -2,7 +2,7 @@
 
 import argparse
 
-from omni.isaac.lab.app import AppLauncher
+from isaaclab.app import AppLauncher
 
 
 # Add argparse arguments
@@ -47,8 +47,8 @@ import torch
 import warnings
 
 import env, camera_env, swarm_env
-from omni.isaac.lab.devices import Se3Keyboard
-from omni.isaac.lab_tasks.utils import parse_env_cfg
+from isaaclab.devices import Se3Keyboard
+from isaaclab_tasks.utils import parse_env_cfg
 
 
 def delta_pose_to_action(delta_pose: np.ndarray) -> np.ndarray:
@@ -149,8 +149,6 @@ def main():
     teleop_interface = Se3Keyboard()
     # Add teleoperation key for env reset
     teleop_interface.add_callback("R", env.reset)
-    # Print helper for keyboard
-    print(teleop_interface)
 
     # Reset environment
     env.reset()

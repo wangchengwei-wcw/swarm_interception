@@ -3,18 +3,18 @@ from __future__ import annotations
 import gymnasium as gym
 import torch
 
-import omni.isaac.lab.sim as sim_utils
-import omni.isaac.core.utils.prims as prim_utils
-from omni.isaac.lab.assets import Articulation, ArticulationCfg
-from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg, ViewerCfg
-from omni.isaac.lab.sensors import TiledCamera, TiledCameraCfg, save_images_to_file
-from omni.isaac.lab.envs.ui import BaseEnvWindow
-from omni.isaac.lab.markers import VisualizationMarkers
-from omni.isaac.lab.scene import InteractiveSceneCfg
-from omni.isaac.lab.sim import SimulationCfg
-from omni.isaac.lab.terrains import TerrainImporterCfg
-from omni.isaac.lab.utils import configclass
-from omni.isaac.lab.markers import CUBOID_MARKER_CFG  # isort: skip
+import isaaclab.sim as sim_utils
+import isaacsim.core.utils.prims as prim_utils
+from isaaclab.assets import Articulation, ArticulationCfg
+from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg, ViewerCfg
+from isaaclab.sensors import TiledCamera, TiledCameraCfg, save_images_to_file
+from isaaclab.envs.ui import BaseEnvWindow
+from isaaclab.markers import VisualizationMarkers
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sim import SimulationCfg
+from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.utils import configclass
+from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from quadcopter import CRAZYFLIE_CFG  # isort: skip
 from utils import quat_to_ang_between_z_body_and_z_world
