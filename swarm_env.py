@@ -15,9 +15,11 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_rotate
 
 from quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils import quat_to_ang_between_z_body_and_z_world
+from minco import MinJerkOpt
 from controller import Controller
 
 
@@ -44,25 +46,43 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 @configclass
 class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-5.0, -5.0, 2.5))
+    viewer = ViewerCfg(eye=(-5.0, -5.0, 4.0))
 
     # Env
     episode_length_s = 60.0
-    decimation = 2
+    physics_freq = 200
+    control_freq = 100
+    mpc_freq = 10
+    gui_render_freq = 50
+    control_decimation = physics_freq // control_freq
     num_drones = 9  # Number of drones per environment
+    decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
+    render_decimation = physics_freq // gui_render_freq
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
-    action_spaces = {agent: 14 for agent in possible_agents}
     observation_spaces = {agent: 13 for agent in possible_agents}
     state_space = 0
     debug_vis = False
+
+    # MINCO trajectory
+    num_pieces = 6
+    duration = 0.3
+    a_max = {agent: 10.0 for agent in possible_agents}
+    v_max = {agent: 5.0 for agent in possible_agents}
+
+    # FIXME: @configclass doesn't support the following syntax #^#
+    # p_max = {agent: num_pieces * v_max[agent] * duration for agent in possible_agents}
+    # action_space = {agent: 3 * (num_pieces + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
+    p_max = {agent: 6 * 5.0 * 0.3 for agent in possible_agents}
+    action_spaces = {agent: 3 * (6 + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
+
+    clip_action = 100  # Default bound for box action spaces in IsaacLab Sb3VecEnvWrapper
 
     ui_window_class_type = QuadcopterEnvWindow
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200,
-        render_interval=decimation * 5,
-        disable_contact_processing=True,
+        render_interval=render_decimation,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
@@ -90,9 +110,6 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
-    p_max = {agent: 500.0 for agent in possible_agents}
-    v_max = {agent: 5.0 for agent in possible_agents}
-    yaw_dot_max = {agent: math.pi / 2 for agent in possible_agents}
     init_gap = 0.8
 
 
@@ -102,8 +119,11 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
     def __init__(self, cfg: QuadcopterSwarmEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self.actions = {}
-        self.a_desired_total, self.thrust_desired, self._thrust_desired, self.q_desired, self.w_desired, self.m_desired = {}, {}, {}, {}, {}, {}
+        if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
+            raise ValueError("Replan and control decimation must be greater than or equal to 1 #^#")
+
+        if 1 / self.cfg.mpc_freq > self.cfg.num_pieces * self.cfg.duration:
+            raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
 
         # Get specific body indices for each drone
         self.body_ids = {agent: self.robots[agent].find_bodies("body")[0] for agent in self.cfg.possible_agents}
@@ -112,11 +132,18 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.robot_inertias = {agent: self.robots[agent].root_physx_view.get_inertias()[0, 0] for agent in self.cfg.possible_agents}
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
 
+        # Traj
+        self.waypoints, self.trajs = {}, {}
+        self.has_prev_traj = torch.tensor([False] * self.num_envs, device=self.device)
+
         # Controllers
+        self.actions = {}
+        self.a_desired_total, self.thrust_desired, self._thrust_desired, self.q_desired, self.w_desired, self.m_desired = {}, {}, {}, {}, {}, {}
         self.controllers = {
             agent: Controller(self.step_dt, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device))
             for agent in self.cfg.possible_agents
         }
+        self.control_counter = 0
 
     def _setup_scene(self):
         self.robots = {}
@@ -143,42 +170,93 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         # Clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
 
-        # TODO: to be deleted
-        # self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
-
         # Add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
-        start = time.perf_counter()
+        head_pva_all, inner_pts_all, tail_pva_all, durations_all = [], [], [], []
         for agent in self.possible_agents:
-            self.actions[agent] = actions[agent].clone().clamp(-1.0, 1.0)
-            self.actions[agent][:, :3] *= self.cfg.p_max[agent]
-            self.actions[agent][:, :3] += self.terrain.env_origins
-            self.actions[agent][:, 3:6] *= self.cfg.v_max[agent]
-            self.actions[agent][:, 12] *= math.pi
-            self.actions[agent][:, 13] *= self.cfg.yaw_dot_max[agent]
+            # Action parametrization: waypoints in body frame
+            self.waypoints[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
 
-            self.a_desired_total[agent], self.thrust_desired[agent], self.q_desired[agent], self.w_desired[agent], self.m_desired[agent] = (
-                self.controllers[agent].get_control(self.robots[agent].data.root_link_state_w, self.actions[agent])
-            )
-            self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
+            # Head states
+            p_odom = self.robots[agent].data.root_state_w[:, :3]
+            q_odom = self.robots[agent].data.root_state_w[:, 3:7]
+            v_odom = self.robots[agent].data.root_state_w[:, 7:10]
+            a_odom = torch.zeros_like(v_odom)
+            if self.trajs:
+                a_odom = torch.where(self.has_prev_traj.unsqueeze(1), self.trajs[agent].get_acc(self.execution_time), a_odom)
+            head_pva = torch.stack([p_odom, v_odom, a_odom], dim=2)
+            head_pva_all.append(head_pva)
+
+            # Waypoints
+            inner_pts = torch.zeros((self.num_envs, 3, self.cfg.num_pieces - 1), device=self.device)
+            for i in range(self.cfg.num_pieces - 1):
+                # Transform to world frame
+                inner_pts[:, :, i] = quat_rotate(q_odom, self.waypoints[agent][:, 3 * i : 3 * (i + 1)] * self.cfg.p_max[agent]) + p_odom
+            inner_pts_all.append(inner_pts)
+
+            # Tail states, transformed to world frame
+            p_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
+            v_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max[agent])
+            a_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max[agent])
+            tail_pva = torch.stack([p_tail, v_tail, a_tail], dim=2)
+            tail_pva_all.append(tail_pva)
+
+            durations = torch.full((self.num_envs, self.cfg.num_pieces), self.cfg.duration, device=self.device)
+            durations_all.append(durations)
+
+        head_pva_all = torch.cat(head_pva_all, dim=0)
+        inner_pts_all = torch.cat(inner_pts_all, dim=0)
+        tail_pva_all = torch.cat(tail_pva_all, dim=0)
+        durations_all = torch.cat(durations_all, dim=0)
+
+        MJO = MinJerkOpt(head_pva_all, tail_pva_all, self.cfg.num_pieces)
+        start = time.perf_counter()
+        MJO.generate(inner_pts_all, durations_all)
         end = time.perf_counter()
-        logger.debug(f"get_controls takes {end - start:.6f}s")
+        logger.debug(f"Local trajectories generation takes {end - start:.6f}s")
+
+        traj_all = MJO.get_traj()
+        self.trajs = {agent: traj_all[i * self.num_envs : (i + 1) * self.num_envs] for i, agent in enumerate(self.possible_agents)}
+        self.execution_time = torch.zeros(self.num_envs, device=self.device)
+        self.has_prev_traj.fill_(True)
 
     def _apply_action(self) -> None:
+        if self.control_counter % self.cfg.control_decimation == 0:
+            start = time.perf_counter()
+            for agent in self.possible_agents:
+                self.actions[agent] = torch.cat(
+                    (
+                        self.trajs[agent].get_pos(self.execution_time),
+                        self.trajs[agent].get_vel(self.execution_time),
+                        self.trajs[agent].get_acc(self.execution_time),
+                        self.trajs[agent].get_jer(self.execution_time),
+                        torch.zeros_like(self.execution_time).unsqueeze(1),
+                        torch.zeros_like(self.execution_time).unsqueeze(1),
+                    ),
+                    dim=1,
+                )
+
+                self.a_desired_total[agent], self.thrust_desired[agent], self.q_desired[agent], self.w_desired[agent], self.m_desired[agent] = self.controllers[
+                    agent
+                ].get_control(self.robots[agent].data.root_state_w, self.actions[agent])
+
+                self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
+
+            end = time.perf_counter()
+            logger.debug(f"get_control for all drones takes {end - start:.6f}s")
+
+            self.control_counter = 0
+        self.control_counter += 1
+
         for agent in self.possible_agents:
-            self.robots[agent].set_external_force_and_torque(
-                self._thrust_desired[agent].unsqueeze(1), self.m_desired[agent].unsqueeze(1), body_ids=self.body_ids[agent]
-            )
+            self.robots[agent].set_external_force_and_torque(self._thrust_desired[agent].unsqueeze(1), self.m_desired[agent].unsqueeze(1), body_ids=self.body_ids[agent])
+        self.execution_time += self.physics_dt
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
-        observations = {}
-        for agent in self.possible_agents:
-            odom = self.robots[agent].data.root_link_state_w.clone()
-            odom[:, :3] -= self.terrain.env_origins
-            observations[agent] = odom
+        observations = {agent: self.robots[agent].data.root_state_w.clone() for agent in self.possible_agents}
         return observations
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
@@ -209,9 +287,10 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
-        # Sample new commands for each drone
+        self.has_prev_traj[env_ids].fill_(False)
+
+        # Reset robot state
         for agent in self.possible_agents:
-            # Reset robot state
             joint_pos = self.robots[agent].data.default_joint_pos[env_ids]
             joint_vel = self.robots[agent].data.default_joint_vel[env_ids]
             default_root_state = self.robots[agent].data.default_root_state[env_ids]

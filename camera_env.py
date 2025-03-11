@@ -17,10 +17,12 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_rotate
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils import quat_to_ang_between_z_body_and_z_world
+from minco import MinJerkOpt
 from controller import Controller
 
 
@@ -47,22 +49,33 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 @configclass
 class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-5.0, -5.0, 2.5))
+    viewer = ViewerCfg(eye=(-5.0, -5.0, 4.0))
 
     # Env
+    physics_freq = 200
+    control_freq = 100
+    mpc_freq = 10
     episode_length_s = 60.0
-    decimation = 2
-    action_space = 14
+    control_decimation = physics_freq // control_freq
+    decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     state_space = 0
     debug_vis = False
+
+    # MINCO trajectory
+    num_pieces = 6
+    duration = 0.3
+    a_max = 10.0
+    v_max = 5.0
+    p_max = num_pieces * v_max * duration
+    action_space = 3 * (num_pieces + 2)  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
+    clip_action = 100  # Default bound for box action spaces in IsaacLab Sb3VecEnvWrapper
 
     ui_window_class_type = QuadcopterEnvWindow
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 200,
-        render_interval=decimation * 2,
-        disable_contact_processing=True,
+        dt=1 / physics_freq,
+        render_interval=decimation,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
@@ -90,9 +103,6 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
 
     # Robot
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-    p_max = 500.0
-    v_max = 5.0
-    yaw_dot_max = math.pi / 2
 
     # Camera
     # Hi there, Isaac Sim does not currently provide independent cameras that don’t see other environments.
@@ -109,8 +119,8 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
             horizontal_aperture=20.955,
             clipping_range=(0.1, 20.0),
         ),
-        width=320,
-        height=240,
+        width=640,
+        height=480,
     )
     observation_space = [tiled_camera.height, tiled_camera.width, 3]
     write_image_to_file = False
@@ -135,8 +145,8 @@ class QuadcopterDepthCameraEnvCfg(QuadcopterRGBCameraEnvCfg):
             horizontal_aperture=20.955,
             clipping_range=(0.1, max_depth),
         ),
-        width=320,
-        height=240,
+        width=640,
+        height=480,
     )
     observation_space = [tiled_camera.height, tiled_camera.width, 1]
 
@@ -146,6 +156,13 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
     def __init__(self, cfg: QuadcopterRGBCameraEnvCfg | QuadcopterDepthCameraEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+
+        if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
+            raise ValueError("Replan and control decimation must be greater than or equal to 1 #^#")
+
+        if 1 / self.cfg.mpc_freq > self.cfg.num_pieces * self.cfg.duration:
+            raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
+
         # Goal position
         self.desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
 
@@ -160,8 +177,13 @@ class QuadcopterCameraEnv(DirectRLEnv):
         self.robot_inertia = self.robot.root_physx_view.get_inertias()[0, 0]
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
 
+        # Traj
+        self.traj = None
+        self.has_prev_traj = torch.tensor([False] * self.num_envs, device=self.device)
+
         # Controller
         self.controller = Controller(self.step_dt, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device))
+        self.control_counter = 0
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
@@ -185,9 +207,6 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
         # Clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
-
-        # TODO: to be deleted
-        # self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
 
         # Add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -226,27 +245,73 @@ class QuadcopterCameraEnv(DirectRLEnv):
         )
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        self.actions = actions.clone().clamp(-1.0, 1.0)
-        self.actions[:, :3] *= self.cfg.p_max
-        self.actions[:, :3] += self.terrain.env_origins
-        self.actions[:, 3:6] *= self.cfg.v_max
-        self.actions[:, 12] *= math.pi
-        self.actions[:, 13] *= self.cfg.yaw_dot_max
+        # Action parametrization: waypoints in body frame
+        self.waypoints = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
 
+        # Head states
+        p_odom = self.robot.data.root_state_w[:, :3]
+        q_odom = self.robot.data.root_state_w[:, 3:7]
+        v_odom = self.robot.data.root_state_w[:, 7:10]
+        a_odom = torch.zeros_like(v_odom)
+        if self.traj is not None:
+            a_odom = torch.where(self.has_prev_traj.unsqueeze(1), self.traj.get_acc(self.execution_time), a_odom)
+        head_pva = torch.stack([p_odom, v_odom, a_odom], dim=2)
+
+        # Waypoints
+        inner_pts = torch.zeros((self.num_envs, 3, self.cfg.num_pieces - 1), device=self.device)
+        for i in range(self.cfg.num_pieces - 1):
+            # Transform to world frame
+            inner_pts[:, :, i] = quat_rotate(q_odom, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + p_odom
+
+        # Tail states, transformed to world frame
+        p_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
+        v_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max)
+        a_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max)
+        tail_pva = torch.stack([p_tail, v_tail, a_tail], dim=2)
+
+        durations = torch.full((self.num_envs, self.cfg.num_pieces), self.cfg.duration, device=self.device)
+
+        MJO = MinJerkOpt(head_pva, tail_pva, self.cfg.num_pieces)
         start = time.perf_counter()
-        self.a_desired_total, self.thrust_desired, self.q_desired, self.w_desired, self.m_desired = self.controller.get_control(
-            self.robot.data.root_link_state_w, self.actions
-        )
+        MJO.generate(inner_pts, durations)
         end = time.perf_counter()
-        logger.debug(f"get_control takes {end - start:.6f}s")
+        logger.debug(f"Local trajectory generation takes {end - start:.6f}s")
 
-        self._thrust_desired = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired.unsqueeze(1)), dim=1)
+        self.traj = MJO.get_traj()
+        self.execution_time = torch.zeros(self.num_envs, device=self.device)
+        self.has_prev_traj.fill_(True)
 
     def _apply_action(self):
-        self.robot.set_external_force_and_torque(self._thrust_desired.unsqueeze(1), self.m_desired.unsqueeze(1), body_ids=self.body_id)
+        if self.control_counter % self.cfg.control_decimation == 0:
+            self.actions = torch.cat(
+                (
+                    self.traj.get_pos(self.execution_time) + self.terrain.env_origins,
+                    self.traj.get_vel(self.execution_time),
+                    self.traj.get_acc(self.execution_time),
+                    self.traj.get_jer(self.execution_time),
+                    torch.zeros_like(self.execution_time).unsqueeze(1),
+                    torch.zeros_like(self.execution_time).unsqueeze(1),
+                ),
+                dim=1,
+            )
 
-        # TODO: only for visualization 0_0 And it's not working due to unknown reason
-        self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, joint_ids=self.joint_id, env_ids=self.robot._ALL_INDICES)
+            start = time.perf_counter()
+            self.a_desired_total, self.thrust_desired, self.q_desired, self.w_desired, self.m_desired = self.controller.get_control(
+                self.robot.data.root_state_w, self.actions
+            )
+            end = time.perf_counter()
+            logger.debug(f"get_control takes {end - start:.6f}s")
+
+            self._thrust_desired = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired.unsqueeze(1)), dim=1)
+
+            self.control_counter = 0
+        self.control_counter += 1
+
+        self.robot.set_external_force_and_torque(self._thrust_desired.unsqueeze(1), self.m_desired.unsqueeze(1), body_ids=self.body_id)
+        self.execution_time += self.physics_dt
+
+        # TODO: only for visualization 0_0 Not working due to unknown reason :(
+        self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, env_ids=self.robot._ALL_INDICES)
 
     def _get_observations(self) -> dict:
         data_type = "rgb" if "rgb" in self.cfg.tiled_camera.data_types else "depth"
@@ -262,8 +327,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
             camera_data[camera_data == float("inf")] = 0
             camera_data /= self.cfg.max_depth
 
-        odom = self.robot.data.root_link_state_w.clone()
-        odom[:, :3] -= self.terrain.env_origins
+        odom = self.robot.data.root_state_w.clone()
 
         observations = {"image": camera_data.clone(), "policy": odom}
 
@@ -273,9 +337,9 @@ class QuadcopterCameraEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        lin_vel = torch.sum(torch.square(self.robot.data.root_com_lin_vel_b), dim=1)
-        ang_vel = torch.sum(torch.square(self.robot.data.root_com_ang_vel_b), dim=1)
-        distance_to_goal = torch.linalg.norm(self.desired_pos_w - self.robot.data.root_link_pos_w, dim=1)
+        lin_vel = torch.sum(torch.square(self.robot.data.root_lin_vel_b), dim=1)
+        ang_vel = torch.sum(torch.square(self.robot.data.root_ang_vel_b), dim=1)
+        distance_to_goal = torch.linalg.norm(self.desired_pos_w - self.robot.data.root_pos_w, dim=1)
         distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
         rewards = {
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
@@ -289,8 +353,8 @@ class QuadcopterCameraEnv(DirectRLEnv):
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        z_exceed_bounds = torch.logical_or(self.robot.data.root_link_pos_w[:, 2] < -0.1, self.robot.data.root_link_pos_w[:, 2] > 10.0)
-        ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_link_quat_w))
+        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < -0.1, self.robot.data.root_pos_w[:, 2] > 10.0)
+        ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
         died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -302,7 +366,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
 
         # Logging
-        final_distance_to_goal = torch.linalg.norm(self.desired_pos_w[env_ids] - self.robot.data.root_link_pos_w[env_ids], dim=1).mean()
+        final_distance_to_goal = torch.linalg.norm(self.desired_pos_w[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1).mean()
         extras = dict()
         for key in self.episode_sums.keys():
             episodic_sum_avg = torch.mean(self.episode_sums[key][env_ids])
@@ -321,6 +385,8 @@ class QuadcopterCameraEnv(DirectRLEnv):
         if len(env_ids) == self.num_envs:
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
+
+        self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
         self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)

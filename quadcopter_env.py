@@ -20,11 +20,12 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import subtract_frame_transforms
+from isaaclab.utils.math import quat_rotate
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils import quat_to_ang_between_z_body_and_z_world
+from minco import MinJerkOpt
 from controller import Controller
 
 
@@ -51,23 +52,36 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 @configclass
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-5.0, -5.0, 2.5))
+    viewer = ViewerCfg(eye=(-5.0, -5.0, 4.0))
 
     # Env
     episode_length_s = 60.0
-    decimation = 2
-    action_space = 14
+    physics_freq = 200
+    control_freq = 100
+    mpc_freq = 10
+    gui_render_freq = 50
+    control_decimation = physics_freq // control_freq
+    decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
+    render_decimation = physics_freq // gui_render_freq
     observation_space = 13
     state_space = 0
     debug_vis = False
+
+    # MINCO trajectory
+    num_pieces = 6
+    duration = 0.3
+    a_max = 10.0
+    v_max = 5.0
+    p_max = num_pieces * v_max * duration
+    action_space = 3 * (num_pieces + 2)  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
+    clip_action = 100  # Default bound for box action spaces in IsaacLab Sb3VecEnvWrapper
 
     ui_window_class_type = QuadcopterEnvWindow
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 200,
-        render_interval=decimation * 2,
-        disable_contact_processing=True,
+        dt=1 / physics_freq,
+        render_interval=render_decimation,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
@@ -95,11 +109,6 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
 
     # Robot
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-    p_max = 500.0
-    v_max = 5.0
-    a_max = 10.0
-    j_max = 60.0
-    yaw_dot_max = math.pi / 2
 
     # Reward scales
     lin_vel_reward_scale = -0.05
@@ -112,8 +121,15 @@ class QuadcopterEnv(DirectRLEnv):
 
     def __init__(self, cfg: QuadcopterEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+
+        if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
+            raise ValueError("Replan and control decimation must be greater than or equal to 1 #^#")
+
+        if 1 / self.cfg.mpc_freq > self.cfg.num_pieces * self.cfg.duration:
+            raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
+
         # Goal position
-        self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self.desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
 
         # Logging
         self.episode_sums = {key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) for key in ["lin_vel", "ang_vel", "distance_to_goal"]}
@@ -126,8 +142,13 @@ class QuadcopterEnv(DirectRLEnv):
         self.robot_inertia = self.robot.root_physx_view.get_inertias()[0, 0]
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
 
+        # Traj
+        self.traj = None
+        self.has_prev_traj = torch.tensor([False] * self.num_envs, device=self.device)
+
         # Controller
         self.controller = Controller(self.step_dt, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device))
+        self.control_counter = 0
 
         # ROS2
         self.node = Node("quadcopter_env", namespace="quadcopter_env")
@@ -153,59 +174,92 @@ class QuadcopterEnv(DirectRLEnv):
         # Clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
 
-        # TODO: to be deleted
-        # self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
-
         # Add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        self.actions = actions.clone().clamp(-1.0, 1.0)
-        self.actions[:, :3] *= self.cfg.p_max
-        self.actions[:, :3] += self.terrain.env_origins
-        self.actions[:, 3:6] *= self.cfg.v_max
-        self.actions[:, 6:9] *= self.cfg.a_max
-        self.actions[:, 9:12] *= self.cfg.j_max
-        self.actions[:, 12] *= math.pi
-        self.actions[:, 13] *= self.cfg.yaw_dot_max
+        # Action parametrization: waypoints in body frame
+        self.waypoints = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
 
+        # Head states
+        p_odom = self.robot.data.root_state_w[:, :3]
+        q_odom = self.robot.data.root_state_w[:, 3:7]
+        v_odom = self.robot.data.root_state_w[:, 7:10]
+        a_odom = torch.zeros_like(v_odom)
+        if self.traj is not None:
+            a_odom = torch.where(self.has_prev_traj.unsqueeze(1), self.traj.get_acc(self.execution_time), a_odom)
+        head_pva = torch.stack([p_odom, v_odom, a_odom], dim=2)
+
+        # Waypoints
+        inner_pts = torch.zeros((self.num_envs, 3, self.cfg.num_pieces - 1), device=self.device)
+        for i in range(self.cfg.num_pieces - 1):
+            # Transform to world frame
+            inner_pts[:, :, i] = quat_rotate(q_odom, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + p_odom
+
+        # Tail states, transformed to world frame
+        p_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
+        v_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max)
+        a_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max)
+        tail_pva = torch.stack([p_tail, v_tail, a_tail], dim=2)
+
+        durations = torch.full((self.num_envs, self.cfg.num_pieces), self.cfg.duration, device=self.device)
+
+        MJO = MinJerkOpt(head_pva, tail_pva, self.cfg.num_pieces)
         start = time.perf_counter()
-        self.a_desired_total, self.thrust_desired, self.q_desired, self.w_desired, self.m_desired = self.controller.get_control(
-            self.robot.data.root_link_state_w, self.actions
-        )
+        MJO.generate(inner_pts, durations)
         end = time.perf_counter()
-        logger.debug(f"get_control takes {end - start:.6f}s")
+        logger.debug(f"Local trajectory generation takes {end - start:.6f}s")
 
-        self._thrust_desired = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired.unsqueeze(1)), dim=1)
-
-        start = time.perf_counter()
-        self._publish_debug_signals()
-        end = time.perf_counter()
-        logger.debug(f"publish_debug_signals takes {end - start:.6f}s")
+        self.traj = MJO.get_traj()
+        self.execution_time = torch.zeros(self.num_envs, device=self.device)
+        self.has_prev_traj.fill_(True)
 
     def _apply_action(self):
+        if self.control_counter % self.cfg.control_decimation == 0:
+            self.actions = torch.cat(
+                (
+                    self.traj.get_pos(self.execution_time),
+                    self.traj.get_vel(self.execution_time),
+                    self.traj.get_acc(self.execution_time),
+                    self.traj.get_jer(self.execution_time),
+                    torch.zeros_like(self.execution_time).unsqueeze(1),
+                    torch.zeros_like(self.execution_time).unsqueeze(1),
+                ),
+                dim=1,
+            )
+
+            start = time.perf_counter()
+            self.a_desired_total, self.thrust_desired, self.q_desired, self.w_desired, self.m_desired = self.controller.get_control(
+                self.robot.data.root_state_w, self.actions
+            )
+            end = time.perf_counter()
+            logger.debug(f"get_control takes {end - start:.6f}s")
+
+            self._thrust_desired = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired.unsqueeze(1)), dim=1)
+
+            start = time.perf_counter()
+            self._publish_debug_signals()
+            end = time.perf_counter()
+            logger.debug(f"publish_debug_signals takes {end - start:.6f}s")
+
+            self.control_counter = 0
+        self.control_counter += 1
+
         self.robot.set_external_force_and_torque(self._thrust_desired.unsqueeze(1), self.m_desired.unsqueeze(1), body_ids=self.body_id)
+        self.execution_time += self.physics_dt
 
         # TODO: only for visualization 0_0 Not working due to unknown reason :(
-        self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, joint_ids=self.joint_id, env_ids=self.robot._ALL_INDICES)
+        self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, env_ids=self.robot._ALL_INDICES)
 
     def _get_observations(self) -> dict:
-        # TODO: only for debug. To be deleted
-        diff = self.robot.data.root_link_state_w - self.robot.data.root_com_state_w
-        mask = torch.abs(diff) > 1e-5
-        for i in range(mask.shape[0]):
-            if mask[i].any():
-                logger.warning(f"Root link state and COM state of environment[{i}] are slightly not consistent o_o")
-
-        odom = self.robot.data.root_link_state_w.clone()
-        odom[:, :3] -= self.terrain.env_origins
+        odom = self.robot.data.root_state_w.clone()
         return {"policy": odom}
 
     def _get_rewards(self) -> torch.Tensor:
-        lin_vel = torch.sum(torch.square(self.robot.data.root_com_lin_vel_b), dim=1)
-        ang_vel = torch.sum(torch.square(self.robot.data.root_com_ang_vel_b), dim=1)
-        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self.robot.data.root_link_pos_w, dim=1)
+        lin_vel = torch.sum(torch.square(self.robot.data.root_lin_vel_b), dim=1)
+        ang_vel = torch.sum(torch.square(self.robot.data.root_ang_vel_b), dim=1)
+        distance_to_goal = torch.linalg.norm(self.desired_pos_w - self.robot.data.root_pos_w, dim=1)
         distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
         rewards = {
             "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
@@ -219,8 +273,8 @@ class QuadcopterEnv(DirectRLEnv):
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        z_exceed_bounds = torch.logical_or(self.robot.data.root_link_pos_w[:, 2] < -0.1, self.robot.data.root_link_pos_w[:, 2] > 10.0)
-        ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_link_quat_w))
+        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < -0.1, self.robot.data.root_pos_w[:, 2] > 10.0)
+        ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
         died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -232,7 +286,7 @@ class QuadcopterEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
 
         # Logging
-        final_distance_to_goal = torch.linalg.norm(self._desired_pos_w[env_ids] - self.robot.data.root_link_pos_w[env_ids], dim=1).mean()
+        final_distance_to_goal = torch.linalg.norm(self.desired_pos_w[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1).mean()
         extras = dict()
         for key in self.episode_sums.keys():
             episodic_sum_avg = torch.mean(self.episode_sums[key][env_ids])
@@ -252,10 +306,12 @@ class QuadcopterEnv(DirectRLEnv):
             # Spread out the resets to avoid spikes in training when many environments reset at a similar time
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
+        self.has_prev_traj[env_ids].fill_(False)
+
         # Sample new commands
-        self._desired_pos_w[env_ids, :2] = torch.zeros_like(self._desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
-        self._desired_pos_w[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
+        self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
+        self.desired_pos_w[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
+        self.desired_pos_w[env_ids, 2] = torch.zeros_like(self.desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
 
         # Reset robot state
         joint_pos = self.robot.data.default_joint_pos[env_ids]
@@ -282,7 +338,7 @@ class QuadcopterEnv(DirectRLEnv):
 
     def _debug_vis_callback(self, event):
         # Update the markers
-        self.goal_pos_visualizer.visualize(self._desired_pos_w)
+        self.goal_pos_visualizer.visualize(self.desired_pos_w)
 
     def _publish_debug_signals(self):
 
@@ -290,7 +346,7 @@ class QuadcopterEnv(DirectRLEnv):
         env_id = 0
 
         # Publish states
-        state = self.robot.data.root_link_state_w[env_id]
+        state = self.robot.data.root_state_w[env_id]
         p_odom = state[:3].cpu().numpy()
         q_odom = state[3:7].cpu().numpy()
         v_odom = state[7:10].cpu().numpy()
@@ -385,7 +441,7 @@ class QuadcopterEnv(DirectRLEnv):
         self.yaw_yaw_dot_thrust_desired_pub.publish(yaw_yaw_dot_thrust_desired_msg)
 
     def _get_ros_timestamp(self) -> Time:
-        sim_time = self.common_step_counter * self.step_dt
+        sim_time = self._sim_step_counter * self.physics_dt
 
         stamp = Time()
         stamp.sec = int(sim_time)

@@ -16,8 +16,8 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
-elif args_cli.task != "FAST-Quadcopter-Direct-v0":
-    raise ValueError("Only the 'FAST-Quadcopter-Direct-v0' environment is supported for eight trajectory generation and tracking.")
+elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
+    args_cli.enable_cameras = True
 
 # Launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -26,13 +26,17 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 from loguru import logger
+import math
+import matplotlib.pyplot as plt
+import numpy as np
 import rclpy
 import sys
 import time
 import torch
 
-import quadcopter_env
+import quadcopter_env, camera_env, swarm_env
 from isaaclab_tasks.utils import parse_env_cfg
+from isaaclab.utils.math import quat_inv, quat_rotate
 from minco import MinJerkOpt
 
 
@@ -55,9 +59,54 @@ def generate_eight_trajectory(p_odom, v_odom, a_odom, p_init):
     start = time.perf_counter()
     MJO.generate(inner_pts, durations)
     end = time.perf_counter()
-    logger.info(f"Trajectory generation takes {end - start:.6f}s")
+    logger.debug(f"Eight trajectory generation takes {end - start:.6f}s")
 
     return MJO.get_traj()
+
+
+def visualize_images_live(images):
+    # Images shape can be (N, height, width) or (N, height, width, channels)
+    N = images.shape[0]
+
+    channels = images.shape[-1]
+    if channels == 1:
+        # Convert grayscale images to 3 channels by repeating the single channel
+        images = np.repeat(images, 3, axis=-1)
+        images = np.where(np.isinf(images), np.nan, images)
+    elif channels == 4:
+        # Use only the first 3 channels as RGB, ignore the 4th channel (perhaps alpha)
+        images = images[..., :3]
+
+    # Get the height and width from the first image (all images have the same size)
+    height, width = images.shape[1], images.shape[2]
+
+    # Calculate the grid size
+    cols = int(math.ceil(math.sqrt(N)))
+    rows = int(math.ceil(N / cols))
+
+    # Create an empty canvas to hold the images
+    canvas = np.zeros((rows * height, cols * width, 3))
+
+    for idx in range(N):
+        row = idx // cols
+        col = idx % cols
+        # Place the image in the grid cell
+        canvas[row * height : (row * height) + height, col * width : (col * width) + width, :] = images[idx]
+
+    # Display the canvas
+    if not hasattr(visualize_images_live, "img_plot"):
+        # Create the plot for the first time
+        visualize_images_live.fig = plt.figure()
+        visualize_images_live.fig.canvas.manager.set_window_title("Images")
+        visualize_images_live.img_plot = plt.imshow(canvas)
+        plt.axis("off")
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    else:
+        # Update the existing plot
+        visualize_images_live.img_plot.set_data(canvas)
+
+    plt.draw()
+    plt.pause(0.001)  # Pause to allow the figure to update
 
 
 def main():
@@ -68,17 +117,18 @@ def main():
     # Reset environment
     env.reset()
 
-    traj, traj_dur, env_reset, replan_required, traj_update_required, execution_time = None, None, None, None, None, None
-    p_init, p_odom, v_odom = None, None, None
+    traj, traj_dur, execution_time, env_reset, replan_required, traj_update_required = None, None, None, None, None, None
+    p_init, p_odom, q_odom, v_odom = None, None, None, None
 
     # Simulate environment
     while simulation_app.is_running():
         # Run everything in inference mode
         with torch.inference_mode():
             if traj is None:
-                obs, _, _, _, _ = env.step(torch.zeros((env.unwrapped.num_envs, 14), device=env.unwrapped.device))
+                obs, _, _, _, _ = env.step(torch.zeros((env.unwrapped.num_envs, env_cfg.action_space), device=env.unwrapped.device))
                 p_init = obs["policy"][:, :3].clone()
                 p_odom = obs["policy"][:, :3]
+                q_odom = obs["policy"][:, 3:7]
                 v_odom = obs["policy"][:, 7:10]
                 a_odom = torch.zeros_like(v_odom)
 
@@ -88,23 +138,30 @@ def main():
                 traj_update_required = torch.tensor([False] * env.unwrapped.num_envs, device=env.unwrapped.device)
 
             if traj_update_required.any():
-                a_odom = torch.where(env_reset, torch.zeros_like(v_odom), traj.get_acc(execution_time))
+                a_odom = torch.where(env_reset.unsqueeze(1), torch.zeros_like(v_odom), traj.get_acc(execution_time))
                 update_traj = generate_eight_trajectory(
                     p_odom[traj_update_required], v_odom[traj_update_required], a_odom[traj_update_required], p_init[traj_update_required]
                 )
                 traj[traj_update_required] = update_traj
                 traj_dur[traj_update_required] = update_traj.get_total_duration()
                 execution_time[traj_update_required] = 0.0
-                replan_required.fill_(False)
 
+            waypoints = [
+                quat_rotate(quat_inv(q_odom), traj.get_pos(execution_time + i * env_cfg.duration) - traj.get_pos(execution_time))
+                / env_cfg.p_max
+                * env_cfg.clip_action
+                for i in range(1, env_cfg.num_pieces + 1)
+            ]
+            actions = torch.cat(waypoints, dim=1)
             actions = torch.cat(
                 (
-                    traj.get_pos(execution_time) / env_cfg.p_max,
-                    traj.get_vel(execution_time) / env_cfg.v_max,
-                    traj.get_acc(execution_time) / env_cfg.a_max,
-                    traj.get_jer(execution_time) / env_cfg.j_max,
-                    torch.zeros_like(execution_time).unsqueeze(1),
-                    torch.zeros_like(execution_time).unsqueeze(1),
+                    actions,
+                    quat_rotate(quat_inv(q_odom), traj.get_vel(execution_time + env_cfg.num_pieces * env_cfg.duration))
+                    / env_cfg.v_max
+                    * env_cfg.clip_action,
+                    quat_rotate(quat_inv(q_odom), traj.get_acc(execution_time + env_cfg.num_pieces * env_cfg.duration))
+                    / env_cfg.a_max
+                    * env_cfg.clip_action,
                 ),
                 dim=1,
             )
@@ -112,12 +169,16 @@ def main():
             # Apply actions
             obs, _, reset_terminated, reset_time_outs, _ = env.step(actions)
             execution_time += env.unwrapped.step_dt
+            p_odom = obs["policy"][:, :3]
+            q_odom = obs["policy"][:, 3:7]
+            v_odom = obs["policy"][:, 7:10]
 
             env_reset = reset_terminated | reset_time_outs
-            replan_required = execution_time > 0.9 * traj_dur
+            replan_required = execution_time > 0.77 * traj_dur  # Magical Doncic
             traj_update_required = env_reset | replan_required
-            p_odom[traj_update_required] = obs["policy"][traj_update_required, :3]
-            v_odom[traj_update_required] = obs["policy"][traj_update_required, 7:10]
+            
+            if args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
+                visualize_images_live(obs["image"].cpu().numpy())
 
     # Close the simulator
     env.close()
@@ -125,6 +186,7 @@ def main():
 
 if __name__ == "__main__":
     logger.remove()
+    # logger.add(sys.stdout, level="DEBUG")
     logger.add(sys.stdout, level="INFO")
 
     rclpy.init()

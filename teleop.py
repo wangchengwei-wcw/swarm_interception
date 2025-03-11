@@ -8,9 +8,9 @@ from isaaclab.app import AppLauncher
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Keyboard teleoperation for quadcopter environments.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
-parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=3, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
-parser.add_argument("--sensitivity", type=float, default=0.5, help="Sensitivity factor.")
+parser.add_argument("--velocity", type=float, default=5.0, help="Velocity of teleoperation.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # Parse the arguments
@@ -37,34 +37,7 @@ import torch
 import quadcopter_env, camera_env, swarm_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
-
-from utils import quat_to_yaw
-
-
-def delta_pose_to_action(delta_pose):
-    action = np.zeros(14)
-
-    if delta_pose[4] > 0:
-        action[5] = args_cli.sensitivity
-    elif delta_pose[4] < 0:
-        action[5] = -args_cli.sensitivity
-
-    if delta_pose[0] > 0:
-        action[3] = args_cli.sensitivity
-    elif delta_pose[0] < 0:
-        action[3] = -args_cli.sensitivity
-
-    if delta_pose[1] > 0:
-        action[4] = args_cli.sensitivity
-    elif delta_pose[1] < 0:
-        action[4] = -args_cli.sensitivity
-
-    if delta_pose[2] > 0:
-        action[13] = args_cli.sensitivity
-    elif delta_pose[2] < 0:
-        action[13] = -args_cli.sensitivity
-
-    return action
+from isaaclab.utils.math import quat_inv, quat_rotate
 
 
 def visualize_images_live(images):
@@ -120,15 +93,13 @@ def main():
 
     # Create controller
     teleop_interface = Se3Keyboard()
-    # Add teleoperation key for env reset
-    teleop_interface.add_callback("R", env.reset)
 
     # Reset environment
     env.reset()
     teleop_interface.reset()
 
-    p_desired, yaw_desired = None, None
-    v_max, yaw_dot_max, dt = env.unwrapped.cfg.v_max, env.unwrapped.cfg.yaw_dot_max, env.unwrapped.step_dt
+    p_desired, p_odom, q_odom = None, None, None
+    dt = env.unwrapped.step_dt
 
     # Simulate environment
     while simulation_app.is_running():
@@ -136,48 +107,68 @@ def main():
         with torch.inference_mode():
             # Get keyboard command
             delta_pose, _ = teleop_interface.advance()
-            action = delta_pose_to_action(delta_pose)
-            action = action.astype("float32")
 
-            # Convert to torch
-            if args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
-                actions = {drone: torch.tensor(action, device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1) for drone in env_cfg.possible_agents}
-                if p_desired is not None and yaw_desired is not None:
-                    for drone in env_cfg.possible_agents:
-                        p_desired[drone] += actions[drone][:, 3:6] * v_max[drone] * dt
-                        yaw_desired[drone] += actions[drone][:, 13] * yaw_dot_max[drone] * dt
+            actions = None
+            if args_cli.task != "FAST-Quadcopter-Swarm-Direct-v0":
+                actions = torch.zeros(env_cfg.action_space, device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1)
+                if p_desired is not None:
+                    if delta_pose[0] > 0:
+                        p_desired[:, 0] += args_cli.velocity * dt
+                    elif delta_pose[0] < 0:
+                        p_desired[:, 0] -= args_cli.velocity * dt
+                    if delta_pose[1] > 0:
+                        p_desired[:, 1] += args_cli.velocity * dt
+                    elif delta_pose[1] < 0:
+                        p_desired[:, 1] -= args_cli.velocity * dt
+                    if delta_pose[4] > 0:
+                        p_desired[:, 2] += args_cli.velocity * dt
+                    elif delta_pose[4] < 0:
+                        p_desired[:, 2] -= args_cli.velocity * dt
 
-                        actions[drone][:, :3] = p_desired[drone] / env_cfg.p_max[drone]
-                        actions[drone][:, 12] = yaw_desired[drone] / math.pi
+                    goal_in_body_frame = quat_rotate(quat_inv(q_odom), p_desired - p_odom)
+                    for i in range(env_cfg.num_pieces):
+                        actions[:, 3 * i : 3 * (i + 1)] = (i + 1) * goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max * env_cfg.clip_action
             else:
-                actions = torch.tensor(action, device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1)
-                if p_desired is not None and yaw_desired is not None:
-                    p_desired += actions[:, 3:6] * v_max * dt
-                    yaw_desired += actions[:, 13] * yaw_dot_max * dt
+                actions = {
+                    drone: torch.zeros(env_cfg.action_spaces[drone], device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1) for drone in env_cfg.possible_agents
+                }
+                if p_desired is not None:
+                    for drone in env_cfg.possible_agents:
+                        if delta_pose[0] > 0:
+                            p_desired[drone][:, 0] += args_cli.velocity * dt
+                        elif delta_pose[0] < 0:
+                            p_desired[drone][:, 0] -= args_cli.velocity * dt
+                        if delta_pose[1] > 0:
+                            p_desired[drone][:, 1] += args_cli.velocity * dt
+                        elif delta_pose[1] < 0:
+                            p_desired[drone][:, 1] -= args_cli.velocity * dt
+                        if delta_pose[4] > 0:
+                            p_desired[drone][:, 2] += args_cli.velocity * dt
+                        elif delta_pose[4] < 0:
+                            p_desired[drone][:, 2] -= args_cli.velocity * dt
 
-                    actions[:, :3] = p_desired / env_cfg.p_max
-                    actions[:, 12] = yaw_desired / math.pi
+                        goal_in_body_frame = quat_rotate(quat_inv(q_odom[drone]), p_desired[drone] - p_odom[drone])
+                        for i in range(env_cfg.num_pieces):
+                            actions[drone][:, 3 * i : 3 * (i + 1)] = (i + 1) * goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max[drone] * env_cfg.clip_action
 
             # Apply actions
             obs, _, reset_terminated, reset_time_outs, _ = env.step(actions)
 
-            if args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
-                if p_desired is None and yaw_desired is None:
-                    p_desired = {drone: obs[drone][:, :3] for drone in env_cfg.possible_agents}
-                    yaw_desired = {drone: quat_to_yaw(obs[drone][:, 3:7]) for drone in env_cfg.possible_agents}
-
+            if args_cli.task != "FAST-Quadcopter-Swarm-Direct-v0":
+                p_odom = obs["policy"][:, :3]
+                q_odom = obs["policy"][:, 3:7]
+                if p_desired is None:
+                    p_desired = obs["policy"][:, :3].clone()
+                reset_env_ids = (reset_terminated | reset_time_outs).nonzero(as_tuple=False).squeeze(-1)
+                p_desired[reset_env_ids] = p_odom[reset_env_ids].clone()
+            else:
+                p_odom = {drone: obs[drone][:, :3] for drone in env_cfg.possible_agents}
+                q_odom = {drone: obs[drone][:, 3:7] for drone in env_cfg.possible_agents}
+                if p_desired is None:
+                    p_desired = {drone: obs[drone][:, :3].clone() for drone in env_cfg.possible_agents}
                 reset_env_ids = (math.prod(reset_terminated.values()) | math.prod(reset_time_outs.values())).nonzero(as_tuple=False).squeeze(-1)
                 for drone in env_cfg.possible_agents:
-                    p_desired[drone][reset_env_ids] = obs[drone][reset_env_ids, :3]
-                    yaw_desired[drone][reset_env_ids] = quat_to_yaw(obs[drone][reset_env_ids, 3:7])
-            else:
-                if p_desired is None and yaw_desired is None:
-                    p_desired = obs["policy"][:, :3]
-                    yaw_desired = quat_to_yaw(obs["policy"][:, 3:7])
-
-                reset_env_ids = (reset_terminated | reset_time_outs).nonzero(as_tuple=False).squeeze(-1)
-                p_desired[reset_env_ids] = obs["policy"][reset_env_ids, :3]
-                yaw_desired[reset_env_ids] = quat_to_yaw(obs["policy"][reset_env_ids, 3:7])
+                    p_desired[drone][reset_env_ids] = p_odom[drone][reset_env_ids].clone()
 
             if args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
                 visualize_images_live(obs["image"].cpu().numpy())
@@ -188,6 +179,7 @@ def main():
 
 if __name__ == "__main__":
     logger.remove()
+    # logger.add(sys.stdout, level="DEBUG")
     logger.add(sys.stdout, level="INFO")
 
     rclpy.init()

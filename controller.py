@@ -8,10 +8,10 @@ from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_qua
 class Controller:
     def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor):
         # Params
-        self.kPp = torch.tensor([2.0, 2.0, 2.0], dtype=torch.float32, device=gravity.device)
-        self.kPv = torch.tensor([3.0, 3.0, 3.0], dtype=torch.float32, device=gravity.device)
-        self.kPR = torch.tensor([15.0, 15.0, 3.0], dtype=torch.float32, device=gravity.device)
-        self.kPw = torch.tensor([0.05, 0.05, 0.01], dtype=torch.float32, device=gravity.device)
+        self.kPp = torch.tensor([2.0, 2.0, 20.0], dtype=torch.float32, device=gravity.device)
+        self.kPv = torch.tensor([3.0, 3.0, 30.0], dtype=torch.float32, device=gravity.device)
+        self.kPR = torch.tensor([15.0, 15.0, 15.0], dtype=torch.float32, device=gravity.device)
+        self.kPw = torch.tensor([0.05, 0.05, 0.05], dtype=torch.float32, device=gravity.device)
         self.K_min_norm_collec_acc = 3
         self.K_max_ang = 45
         self.K_max_bodyrates_feedback = 4

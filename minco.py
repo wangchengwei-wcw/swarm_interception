@@ -7,6 +7,11 @@ class Trajectory:
         self.num_env, self.N = durations.shape
         self.durations = durations
         self.coeff_mats = coeff_mats
+        
+    def __getitem__(self, index):
+        new_durations = self.durations[index]
+        new_coeff_mats = self.coeff_mats[index]
+        return Trajectory(durations=new_durations, coeff_mats=new_coeff_mats)
 
     def __setitem__(self, index, traj_new):
         self.durations[index] = traj_new.durations
