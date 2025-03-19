@@ -20,10 +20,10 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_rotate
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
-from quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
-from utils import quat_to_ang_between_z_body_and_z_world
-from minco import MinJerkOpt
-from controller import Controller
+from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
+from utils.utils import quat_to_ang_between_z_body_and_z_world
+from utils.minco import MinJerkOpt
+from utils.controller import Controller
 
 
 class QuadcopterEnvWindow(BaseEnvWindow):

@@ -34,7 +34,7 @@ import rclpy
 import sys
 import torch
 
-import quadcopter_env, camera_env, swarm_env
+import envs.quadcopter_env as quadcopter_env, envs.camera_env as camera_env, envs.swarm_env as swarm_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate

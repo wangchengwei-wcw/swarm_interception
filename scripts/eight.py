@@ -34,10 +34,10 @@ import sys
 import time
 import torch
 
-import quadcopter_env, camera_env, swarm_env
+import envs.quadcopter_env as quadcopter_env, envs.camera_env as camera_env, envs.swarm_env as swarm_env
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate
-from minco import MinJerkOpt
+from utils.minco import MinJerkOpt
 
 
 def generate_eight_trajectory(p_odom, v_odom, a_odom, p_init):
