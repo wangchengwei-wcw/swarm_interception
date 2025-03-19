@@ -20,7 +20,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_rotate
+from isaaclab.utils.math import quat_inv, quat_rotate
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
@@ -249,12 +249,20 @@ class QuadcopterEnv(DirectRLEnv):
         self.robot.set_external_force_and_torque(self._thrust_desired.unsqueeze(1), self.m_desired.unsqueeze(1), body_ids=self.body_id)
         self.execution_time += self.physics_dt
 
-        # TODO: only for visualization 0_0 Not working due to unknown reason :(
+        # TODO: Only for visualization 0_0 Not working due to unknown reason :(
         self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, env_ids=self.robot._ALL_INDICES)
 
     def _get_observations(self) -> dict:
-        odom = self.robot.data.root_state_w.clone()
-        return {"policy": odom}
+        goal_in_body_frame = quat_rotate(quat_inv(self.robot.data.root_quat_w), self.desired_pos_w - self.robot.data.root_pos_w)
+        obs = torch.cat(
+            [
+                goal_in_body_frame,
+                self.robot.data.root_quat_w,
+                self.robot.data.root_vel_w,
+            ],
+            dim=-1,
+        )
+        return {"policy": obs, "odom": self.robot.data.root_state_w.clone()}
 
     def _get_rewards(self) -> torch.Tensor:
         lin_vel = torch.sum(torch.square(self.robot.data.root_lin_vel_b), dim=1)

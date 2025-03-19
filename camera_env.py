@@ -190,8 +190,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
         if len(self.cfg.tiled_camera.data_types) != 1:
             raise ValueError(
-                "Currently, the camera environment only supports one image type at a time but the following were"
-                f" provided: {self.cfg.tiled_camera.data_types}"
+                "Currently, the camera environment only supports one image type at a time but the following were" f" provided: {self.cfg.tiled_camera.data_types}"
             )
 
     def _setup_scene(self):
@@ -214,35 +213,9 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
         prim_utils.create_prim("/World/Objects", "Xform")
 
-        cfg_cone_rigid = sim_utils.ConeCfg(
-            radius=0.25,
-            height=1.618 / 2,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.77, 0.23, 0.23)),
-        )
-        cfg_cone_rigid.func(
-            "/World/Objects/ConeRigid",
-            cfg_cone_rigid,
-            translation=(4.0, 1.0, 0.5),
-            orientation=(1.0, 0.0, 0.0, 0.0),
-        )
-
-        cfg_cylinder_rigid = sim_utils.CylinderCfg(
-            radius=0.25,
-            height=1.618 / 2,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.23, 0.23, 0.77)),
-        )
-        cfg_cylinder_rigid.func(
-            "/World/Objects/CylinderRigid",
-            cfg_cylinder_rigid,
-            translation=(4.0, 2.0, 0.5),
-            orientation=(1.0, 0.0, 0.0, 0.0),
-        )
+        # FIXME: Bugs when using relative path of a USD file
+        cfg_black_oak = sim_utils.UsdFileCfg(usd_path="/home/laji/Wss/e2e_swarm/swarm_rl/assets/black_oak_fall/Black_Oak_Fall.usd", scale=(0.008, 0.008, 0.008))
+        cfg_black_oak.func("/World/Objects/Black_Oak", cfg_black_oak, translation=(8.0, 0.0, 0.1))
 
     def _pre_physics_step(self, actions: torch.Tensor):
         # Action parametrization: waypoints in body frame
@@ -310,7 +283,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
         self.robot.set_external_force_and_torque(self._thrust_desired.unsqueeze(1), self.m_desired.unsqueeze(1), body_ids=self.body_id)
         self.execution_time += self.physics_dt
 
-        # TODO: only for visualization 0_0 Not working due to unknown reason :(
+        # TODO: Only for visualization 0_0 Not working due to unknown reason :(
         self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, env_ids=self.robot._ALL_INDICES)
 
     def _get_observations(self) -> dict:
@@ -327,9 +300,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
             camera_data[camera_data == float("inf")] = 0
             camera_data /= self.cfg.max_depth
 
-        odom = self.robot.data.root_state_w.clone()
-
-        observations = {"image": camera_data.clone(), "policy": odom}
+        observations = {"image": camera_data.clone(), "odom": self.robot.data.root_state_w.clone()}
 
         if self.cfg.write_image_to_file:
             save_images_to_file(observations["image"], f"quadcopter_{data_type}.png")

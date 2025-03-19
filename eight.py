@@ -126,10 +126,10 @@ def main():
         with torch.inference_mode():
             if traj is None:
                 obs, _, _, _, _ = env.step(torch.zeros((env.unwrapped.num_envs, env_cfg.action_space), device=env.unwrapped.device))
-                p_init = obs["policy"][:, :3].clone()
-                p_odom = obs["policy"][:, :3]
-                q_odom = obs["policy"][:, 3:7]
-                v_odom = obs["policy"][:, 7:10]
+                p_init = obs["odom"][:, :3].clone()
+                p_odom = obs["odom"][:, :3]
+                q_odom = obs["odom"][:, 3:7]
+                v_odom = obs["odom"][:, 7:10]
                 a_odom = torch.zeros_like(v_odom)
 
                 traj = generate_eight_trajectory(p_odom, v_odom, a_odom, p_init)
@@ -169,9 +169,9 @@ def main():
             # Apply actions
             obs, _, reset_terminated, reset_time_outs, _ = env.step(actions)
             execution_time += env.unwrapped.step_dt
-            p_odom = obs["policy"][:, :3]
-            q_odom = obs["policy"][:, 3:7]
-            v_odom = obs["policy"][:, 7:10]
+            p_odom = obs["odom"][:, :3]
+            q_odom = obs["odom"][:, 3:7]
+            v_odom = obs["odom"][:, 7:10]
 
             env_reset = reset_terminated | reset_time_outs
             replan_required = execution_time > 0.77 * traj_dur  # Magical Doncic

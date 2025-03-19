@@ -8,9 +8,9 @@ from isaaclab.app import AppLauncher
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Keyboard teleoperation for quadcopter environments.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
-parser.add_argument("--num_envs", type=int, default=3, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
-parser.add_argument("--velocity", type=float, default=5.0, help="Velocity of teleoperation.")
+parser.add_argument("--velocity", type=float, default=8.0, help="Velocity of teleoperation.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # Parse the arguments
@@ -155,10 +155,10 @@ def main():
             obs, _, reset_terminated, reset_time_outs, _ = env.step(actions)
 
             if args_cli.task != "FAST-Quadcopter-Swarm-Direct-v0":
-                p_odom = obs["policy"][:, :3]
-                q_odom = obs["policy"][:, 3:7]
+                p_odom = obs["odom"][:, :3]
+                q_odom = obs["odom"][:, 3:7]
                 if p_desired is None:
-                    p_desired = obs["policy"][:, :3].clone()
+                    p_desired = obs["odom"][:, :3].clone()
                 reset_env_ids = (reset_terminated | reset_time_outs).nonzero(as_tuple=False).squeeze(-1)
                 p_desired[reset_env_ids] = p_odom[reset_env_ids].clone()
             else:
