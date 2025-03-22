@@ -387,7 +387,7 @@ class QuadcopterEnv(DirectRLEnv):
         if hasattr(self, "goal_pos_visualizer"):
             self.goal_pos_visualizer.visualize(translations=self.desired_pos_w)
 
-        if self.visualize_new_cmd && hasattr(self, "waypoint_visualizer") and hasattr(self, "tailpoint_visualizer"):
+        if self.visualize_new_cmd and hasattr(self, "waypoint_visualizer") and hasattr(self, "tailpoint_visualizer"):
             p_odom = self.robot.data.root_state_w[:, :3]
             q_odom = self.robot.data.root_state_w[:, 3:7]
 

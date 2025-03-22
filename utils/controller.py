@@ -1,6 +1,6 @@
 from loguru import logger
-import torch
 import math
+import torch
 
 from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_quat
 

@@ -7,7 +7,7 @@ import sys
 from isaaclab.app import AppLauncher
 
 
-# TODO: improve import modality
+# TODO: Improve import modality
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 
 # Add argparse arguments
