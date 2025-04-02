@@ -3,7 +3,6 @@
 import argparse
 import os
 import sys
-
 from isaaclab.app import AppLauncher
 
 
@@ -13,8 +12,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Eight trajectory generation and tracking for single quadcopter environment.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations.")
-parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # Parse the arguments
@@ -190,13 +189,10 @@ def main():
 
 if __name__ == "__main__":
     logger.remove()
-    # logger.add(sys.stdout, level="DEBUG")
     logger.add(sys.stdout, level="INFO")
 
     rclpy.init()
-    # Run the main function
     main()
     rclpy.shutdown()
 
-    # Close sim app
     simulation_app.close()

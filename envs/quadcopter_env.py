@@ -55,7 +55,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     viewer = ViewerCfg(eye=(-5.0, -5.0, 4.0))
 
     # Env
-    episode_length_s = 60.0
+    episode_length_s = 13.0
     physics_freq = 200
     control_freq = 100
     mpc_freq = 10
@@ -324,9 +324,9 @@ class QuadcopterEnv(DirectRLEnv):
         self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
-        self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
+        self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(-10.0, 10.0)
         self.desired_pos_w[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_pos_w[env_ids, 2] = torch.zeros_like(self.desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
+        self.desired_pos_w[env_ids, 2] = torch.zeros_like(self.desired_pos_w[env_ids, 2]).uniform_(1.0, 2.0)
 
         # Reset robot state
         joint_pos = self.robot.data.default_joint_pos[env_ids]
