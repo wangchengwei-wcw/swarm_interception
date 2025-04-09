@@ -25,7 +25,7 @@ parser.add_argument("--seed", type=int, default=None, help="Seed used for the en
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--save_interval", type=int, default=1e6, help="Interval between checkpoints (in steps).")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in frames).")
+parser.add_argument("--video_length", type=int, default=400, help="Length of the recorded video (in frames).")
 parser.add_argument("--pretrained_model", type=str, default=None, help="Path to the pre-trained model.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
