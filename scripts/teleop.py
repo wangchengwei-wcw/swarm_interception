@@ -130,7 +130,7 @@ def main():
 
                     goal_in_body_frame = quat_rotate(quat_inv(q_odom), p_desired - p_odom)
                     for i in range(env_cfg.num_pieces):
-                        actions[:, 3 * i : 3 * (i + 1)] = (i + 1) * goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max * env_cfg.clip_action
+                        actions[:, 3 * i : 3 * (i + 1)] = goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max * env_cfg.clip_action
             else:
                 actions = {
                     drone: torch.zeros(env_cfg.action_spaces[drone], device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1) for drone in env_cfg.possible_agents
@@ -152,7 +152,7 @@ def main():
 
                         goal_in_body_frame = quat_rotate(quat_inv(q_odom[drone]), p_desired[drone] - p_odom[drone])
                         for i in range(env_cfg.num_pieces):
-                            actions[drone][:, 3 * i : 3 * (i + 1)] = (i + 1) * goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max[drone] * env_cfg.clip_action
+                            actions[drone][:, 3 * i : 3 * (i + 1)] = goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max[drone] * env_cfg.clip_action
 
             # Apply actions
             obs, _, reset_terminated, reset_time_outs, _ = env.step(actions)

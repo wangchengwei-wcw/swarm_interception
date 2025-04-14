@@ -26,7 +26,7 @@ class Trajectory:
         idx = idx.clamp(0, self.N - 1).squeeze(1)
         t_local = t - cum_durations[range(self.num_env), idx]
 
-        mask = t_local > self.durations[range(self.num_env), idx] + 1e-10
+        mask = t_local > self.durations[range(self.num_env), idx] + 1e-6
         if mask.any():
             for env in torch.where(mask)[0]:
                 logger.error(f"Retrieved timestamp out of trajectory duration in environment {env.item()} #^#")
@@ -101,7 +101,7 @@ class BandedSystem:
         return self.mat_data[:, (i - j + self.upper_bw) * self.N + j]
 
     def factorizeLU(self):
-        eps = 1e-10
+        eps = 1e-6
         for k in range(self.N - 1):
             iM = min(k + self.lower_bw, self.N - 1)
             cVl = self(k, k)
@@ -129,7 +129,7 @@ class BandedSystem:
                 if mask.any():
                     b[mask, i] -= self(i, j)[mask].unsqueeze(1) * b[mask, j]
 
-        eps = 1e-10
+        eps = 1e-6
         for j in range(self.N - 1, -1, -1):
             self(j, j)[torch.abs(self(j, j)) < eps] += eps
             b[:, j] /= self(j, j).unsqueeze(1)

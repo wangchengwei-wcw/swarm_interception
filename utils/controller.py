@@ -135,7 +135,7 @@ def compute_limited_total_acc_from_thrust_force(
     total_acc = thrustforce / mass
 
     # Limit magnitude
-    norms = total_acc.norm(p=2, dim=1, keepdim=True) + 1e-10
+    norms = total_acc.norm(p=2, dim=1, keepdim=True) + 1e-6
     total_acc = torch.where(norms < K_min_norm_collec_acc, total_acc / norms * K_min_norm_collec_acc, total_acc)
 
     # Limit angle
@@ -144,10 +144,10 @@ def compute_limited_total_acc_from_thrust_force(
         # Not allow too small z-force when angle limit is enabled
         z_acc = torch.where(z_acc < K_min_norm_collec_acc, K_min_norm_collec_acc, z_acc)
 
-        z_B = total_acc / (total_acc.norm(p=2, dim=1, keepdim=True) + 1e-10)
+        z_B = total_acc / (total_acc.norm(p=2, dim=1, keepdim=True) + 1e-6)
         unit_z = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=total_acc.device).expand(z_B.shape[0], 3)
         rot_axis = torch.cross(unit_z, z_B, dim=1)
-        rot_axis = rot_axis / (rot_axis.norm(p=2, dim=1, keepdim=True) + 1e-10)
+        rot_axis = rot_axis / (rot_axis.norm(p=2, dim=1, keepdim=True) + 1e-6)
 
         rot_ang = torch.acos(z_B[:, 2].clamp(-1.0, 1.0))
         K_max_ang = math.radians(K_max_ang)

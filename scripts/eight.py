@@ -150,7 +150,7 @@ def main():
                 execution_time[traj_update_required] = 0.0
 
             waypoints = [
-                quat_rotate(quat_inv(q_odom), traj.get_pos(execution_time + i * env_cfg.duration) - traj.get_pos(execution_time))
+                quat_rotate(quat_inv(q_odom), traj.get_pos(execution_time + i * env_cfg.duration) - traj.get_pos(execution_time + (i - 1) * env_cfg.duration))
                 / env_cfg.p_max
                 * env_cfg.clip_action
                 for i in range(1, env_cfg.num_pieces + 1)
@@ -159,12 +159,8 @@ def main():
             actions = torch.cat(
                 (
                     actions,
-                    quat_rotate(quat_inv(q_odom), traj.get_vel(execution_time + env_cfg.num_pieces * env_cfg.duration))
-                    / env_cfg.v_max
-                    * env_cfg.clip_action,
-                    quat_rotate(quat_inv(q_odom), traj.get_acc(execution_time + env_cfg.num_pieces * env_cfg.duration))
-                    / env_cfg.a_max
-                    * env_cfg.clip_action,
+                    quat_rotate(quat_inv(q_odom), traj.get_vel(execution_time + env_cfg.num_pieces * env_cfg.duration)) / env_cfg.v_max * env_cfg.clip_action,
+                    quat_rotate(quat_inv(q_odom), traj.get_acc(execution_time + env_cfg.num_pieces * env_cfg.duration)) / env_cfg.a_max * env_cfg.clip_action,
                 ),
                 dim=1,
             )
@@ -179,7 +175,7 @@ def main():
             env_reset = reset_terminated | reset_time_outs
             replan_required = execution_time > 0.77 * traj_dur  # Magical Doncic
             traj_update_required = env_reset | replan_required
-            
+
             if args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
                 visualize_images_live(obs["image"].cpu().numpy())
 

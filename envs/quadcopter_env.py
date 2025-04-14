@@ -52,7 +52,13 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 @configclass
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(-5.0, -5.0, 4.0))
+    viewer = ViewerCfg(eye=(-10.0, -10.0, 4.0))
+
+    # Reward weights
+    distance_to_goal_reward_weight = 1.0  # Reward for approaching the goal
+    dist_btw_wps_uniformity_reward_weight = 1.0  # Reward for uniform distances between waypoints
+    angle_restriction_reward_weight = 0.0  # Reward for restricting angles between consecutive path segments
+    action_temporal_smoothness_reward_weight = 0.0  # Reward for temporal smoothness of actions
 
     # Env
     episode_length_s = 13.0
@@ -108,11 +114,6 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
 
     # Robot
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-
-    # Reward scales
-    lin_vel_reward_scale = -0.05
-    ang_vel_reward_scale = -0.01
-    distance_to_goal_reward_scale = 15.0
 
     # Debug visualization
     debug_vis = True
@@ -187,6 +188,9 @@ class QuadcopterEnv(DirectRLEnv):
         # Action parametrization: waypoints in body frame
         self.waypoints = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
 
+        for i in range(self.cfg.num_pieces - 1):
+            self.waypoints[:, 3 * (i + 1) : 3 * (i + 2)] += self.waypoints[:, 3 * i : 3 * (i + 1)]
+
         # Head states
         p_odom = self.robot.data.root_state_w[:, :3]
         q_odom = self.robot.data.root_state_w[:, 3:7]
@@ -203,10 +207,10 @@ class QuadcopterEnv(DirectRLEnv):
             inner_pts[:, :, i] = quat_rotate(q_odom, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + p_odom
 
         # Tail states, transformed to world frame
-        p_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
+        self.p_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
         v_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max)
         a_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max)
-        tail_pva = torch.stack([p_tail, v_tail, a_tail], dim=2)
+        tail_pva = torch.stack([self.p_tail, v_tail, a_tail], dim=2)
 
         durations = torch.full((self.num_envs, self.cfg.num_pieces), self.cfg.duration, device=self.device)
 
@@ -220,6 +224,8 @@ class QuadcopterEnv(DirectRLEnv):
         self.execution_time = torch.zeros(self.num_envs, device=self.device)
         self.has_prev_traj.fill_(True)
 
+        self.p_odom_for_vis = self.robot.data.root_state_w[:, :3].clone()
+        self.q_odom_for_vis = self.robot.data.root_state_w[:, 3:7].clone()
         self.visualize_new_cmd = True
 
     def _apply_action(self):
@@ -264,27 +270,72 @@ class QuadcopterEnv(DirectRLEnv):
         obs = torch.cat(
             [
                 goal_in_body_frame,
-                self.robot.data.root_quat_w,
-                self.robot.data.root_vel_w,
+                self.robot.data.root_quat_w.clone(),
+                self.robot.data.root_vel_w.clone(),
             ],
             dim=-1,
         )
         return {"policy": obs, "odom": self.robot.data.root_state_w.clone()}
 
     def _get_rewards(self) -> torch.Tensor:
-        lin_vel = torch.sum(torch.square(self.robot.data.root_lin_vel_b), dim=1)
-        ang_vel = torch.sum(torch.square(self.robot.data.root_ang_vel_b), dim=1)
+        # 1. Goal reaching reward
         distance_to_goal = torch.linalg.norm(self.desired_pos_w - self.robot.data.root_pos_w, dim=1)
-        distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
+        tail_wp_dist_to_goal = torch.linalg.norm(self.desired_pos_w - self.p_tail, dim=1)
+        distance_to_goal_reward = torch.exp(-0.5 * (distance_to_goal + tail_wp_dist_to_goal))
+
+        # 2. Waypoint distance uniformity reward
+        wps = [torch.zeros(self.num_envs, 3, device=self.device)]
+        for i in range(self.cfg.num_pieces):
+            wps.append(self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max)
+
+        # Calculate coefficient of variation (CV) of distances
+        if self.cfg.num_pieces > 1:
+            dist_btw_wps = []
+            for i in range(self.cfg.num_pieces):
+                dist_btw_wps.append(torch.linalg.norm(wps[i + 1] - wps[i], dim=1))
+
+            dist_btw_wps = torch.stack(dist_btw_wps, dim=1)
+            dist_mean = torch.mean(dist_btw_wps, dim=1)
+            dist_std = torch.std(dist_btw_wps, dim=1)
+            dist_cv = torch.where(dist_mean > 1e-6, dist_std / dist_mean, torch.zeros_like(dist_mean))
+            dist_btw_wps_uniformity_reward = torch.exp(-2.3 * dist_cv)
+        else:
+            dist_btw_wps_uniformity_reward = torch.zeros(self.num_envs, device=self.device)
+
+        # 3. Reward for restricting angles between consecutive path segments
+        if self.cfg.num_pieces > 1:
+            cos_angs = []
+            for i in range(self.cfg.num_pieces - 1):
+                vec1 = wps[i + 1] - wps[i]
+                vec2 = wps[i + 2] - wps[i + 1]
+
+                vec1_norm = torch.linalg.norm(vec1, dim=1)
+                vec2_norm = torch.linalg.norm(vec2, dim=1)
+
+                dot_product = torch.sum(vec1 * vec2, dim=1)
+                cos_ang = torch.where((vec1_norm > 1e-6) & (vec2_norm > 1e-6), dot_product / (vec1_norm * vec2_norm), torch.ones_like(dot_product))
+                cos_angs.append(cos_ang)
+
+            cos_angs = torch.stack(cos_angs, dim=1)
+            angle_restriction_reward = torch.mean(torch.exp(-5.0 * (1 - cos_angs) / 2), dim=1)
+        else:
+            angle_restriction_reward = torch.zeros(self.num_envs, device=self.device)
+
+        # 4. Reward for temporal smoothness of actions
+        action_temporal_smoothness_reward = torch.zeros(self.num_envs, device=self.device)
+        if hasattr(self, "prev_waypoints"):
+            waypoint_diff = torch.linalg.norm(self.waypoints - self.prev_waypoints, dim=1)
+            action_temporal_smoothness_reward = torch.exp(-0.5 * waypoint_diff)
+        self.prev_waypoints = self.waypoints.clone()
+
         rewards = {
-            "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
-            "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
-            "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+            "distance_to_goal": distance_to_goal_reward * self.cfg.distance_to_goal_reward_weight * self.step_dt,
+            "dist_btw_wps_uniformity": dist_btw_wps_uniformity_reward * self.cfg.dist_btw_wps_uniformity_reward_weight * self.step_dt,
+            "angle_restriction": angle_restriction_reward * self.cfg.angle_restriction_reward_weight * self.step_dt,
+            "action_temporal_smoothness": action_temporal_smoothness_reward * self.cfg.action_temporal_smoothness_reward_weight * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-        # Logging
-        for key, value in rewards.items():
-            self.episode_sums[key] += value
+
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -324,9 +375,9 @@ class QuadcopterEnv(DirectRLEnv):
         self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
-        self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(-10.0, 10.0)
+        self.desired_pos_w[env_ids, :2] = torch.zeros_like(self.desired_pos_w[env_ids, :2]).uniform_(0.0, 10.0)
         self.desired_pos_w[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_pos_w[env_ids, 2] = torch.zeros_like(self.desired_pos_w[env_ids, 2]).uniform_(1.0, 2.0)
+        self.desired_pos_w[env_ids, 2] = torch.zeros_like(self.desired_pos_w[env_ids, 2]).uniform_(1.0, 1.3)
 
         # Reset robot state
         joint_pos = self.robot.data.default_joint_pos[env_ids]
@@ -342,65 +393,40 @@ class QuadcopterEnv(DirectRLEnv):
             if self.cfg.debug_vis_goal:
                 if not hasattr(self, "goal_pos_visualizer"):
                     marker_cfg = CUBOID_MARKER_CFG.copy()
-                    marker_cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
-                    marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
+                    marker_cfg.markers["cuboid"].size = (0.07, 0.07, 0.07)
+                    marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0))
                     marker_cfg.prim_path = "/Visuals/Command/goal"
                     self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
                 self.goal_pos_visualizer.set_visibility(True)
-            else:
-                if hasattr(self, "goal_pos_visualizer"):
-                    self.goal_pos_visualizer.set_visibility(False)
 
             if self.cfg.debug_vis_action:
-                if not hasattr(self, "waypoint_visualizer"):
-                    marker_cfg = VisualizationMarkersCfg(
-                        prim_path="/Visuals/Command/waypoints",
-                        markers={
-                            "sphere": sim_utils.SphereCfg(
-                                radius=0.05,
-                                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
-                            ),
-                        },
-                    )
-                    self.waypoint_visualizer = VisualizationMarkers(marker_cfg)
-                self.waypoint_visualizer.set_visibility(True)
-
-                if not hasattr(self, "tailpoint_visualizer"):
-                    marker_cfg = VisualizationMarkersCfg(
-                        prim_path="/Visuals/Command/tailpoint",
-                        markers={
-                            "sphere": sim_utils.SphereCfg(
-                                radius=0.1,
-                                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
-                            ),
-                        },
-                    )
-                    self.tailpoint_visualizer = VisualizationMarkers(marker_cfg)
-                self.tailpoint_visualizer.set_visibility(True)
-            else:
-                if hasattr(self, "waypoint_visualizer"):
-                    self.waypoint_visualizer.set_visibility(False)
-                if hasattr(self, "tailpoint_visualizer"):
-                    self.tailpoint_visualizer.set_visibility(False)
+                if not hasattr(self, "waypoint_visualizers"):
+                    self.waypoint_visualizers = []
+                    r_min, r_max = 0.01, 0.035
+                    color_s, color_e = (1.0, 0.0, 0.0), (0.1, 0.0, 0.0)
+                    for i in range(self.cfg.num_pieces):
+                        ratio = i / max(self.cfg.num_pieces - 1, 1)
+                        r = r_min + (r_max - r_min) * ratio
+                        c = (
+                            color_s[0] + (color_e[0] - color_s[0]) * ratio,
+                            color_s[1] + (color_e[1] - color_s[1]) * ratio,
+                            color_s[2] + (color_e[2] - color_s[2]) * ratio,
+                        )
+                        marker_cfg = VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/Command/waypoint_{i}",
+                            markers={"sphere": sim_utils.SphereCfg(radius=r, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=c))},
+                        )
+                        self.waypoint_visualizers.append(VisualizationMarkers(marker_cfg))
+                        self.waypoint_visualizers[i].set_visibility(True)
 
     def _debug_vis_callback(self, event):
         if hasattr(self, "goal_pos_visualizer"):
             self.goal_pos_visualizer.visualize(translations=self.desired_pos_w)
 
-        if self.visualize_new_cmd and hasattr(self, "waypoint_visualizer") and hasattr(self, "tailpoint_visualizer"):
-            p_odom = self.robot.data.root_state_w[:, :3]
-            q_odom = self.robot.data.root_state_w[:, 3:7]
-
-            inner_pts_world = torch.zeros((self.num_envs, self.cfg.num_pieces - 1, 3), device=self.device)
-            for i in range(self.cfg.num_pieces - 1):
-                inner_pts_world[:, i] = quat_rotate(q_odom, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + p_odom
-
-            inner_pts_flat = inner_pts_world.reshape(-1, 3)
-            self.waypoint_visualizer.visualize(translations=inner_pts_flat)
-            
-            p_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
-            self.tailpoint_visualizer.visualize(translations=p_tail)
-
+        if self.visualize_new_cmd and hasattr(self, "waypoint_visualizers"):
+            for i in range(self.cfg.num_pieces):
+                waypoint_world = quat_rotate(self.q_odom_for_vis, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + self.p_odom_for_vis
+                self.waypoint_visualizers[i].visualize(translations=waypoint_world)
             self.visualize_new_cmd = False
 
     def _publish_debug_signals(self):
