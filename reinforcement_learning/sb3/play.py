@@ -19,7 +19,7 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during playing.")
-parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in frames).")
+parser.add_argument("--video_length", type=int, default=300, help="Length of the recorded video (in frames).")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
 parser.add_argument("--real_time", action="store_true", default=False, help="Run in real-time, if possible.")
 # Append AppLauncher cli args

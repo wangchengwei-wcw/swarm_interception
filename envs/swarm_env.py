@@ -52,6 +52,7 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
 
     # Reward weights
     dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
+    tail_wp_dist_to_goal_reward_weight = 0.0  # Reward for tail waypoints to approach the goal
     mutual_collision_avoidance_reward_weight = 1.0  # Reward for mutual collision avoidance between drones
 
     # Env
@@ -67,7 +68,6 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
     observation_spaces = {agent: 13 for agent in possible_agents}
     state_space = 0
-    debug_vis = False
 
     # MINCO trajectory
     num_pieces = 6
@@ -147,7 +147,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.gravity = torch.tensor(self.sim.cfg.gravity, device=self.device)
 
         # Traj
-        self.waypoints, self.trajs = {}, {}
+        self.waypoints, self.trajs, self.p_tail = {}, {}, {}
         self.has_prev_traj = torch.tensor([False] * self.num_envs, device=self.device)
 
         # Controllers
@@ -218,10 +218,10 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             inner_pts_all.append(inner_pts)
 
             # Tail states, transformed to world frame
-            p_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
+            self.p_tail[agent] = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max[agent]) + p_odom
             v_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max[agent])
             a_tail = quat_rotate(q_odom, self.waypoints[agent][:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max[agent])
-            tail_pva = torch.stack([p_tail, v_tail, a_tail], dim=2)
+            tail_pva = torch.stack([self.p_tail[agent], v_tail, a_tail], dim=2)
             tail_pva_all.append(tail_pva)
 
             durations = torch.full((self.num_envs, self.cfg.num_pieces), self.cfg.duration, device=self.device)
@@ -311,10 +311,14 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         for agent in self.possible_agents:
             dist_to_goal = torch.linalg.norm(self.desired_position - self.robots[agent].data.root_pos_w, dim=1)
-            dist_to_goal_reward = torch.exp(-0.5 * dist_to_goal)
+            dist_to_goal_reward = torch.exp(-1.0 * dist_to_goal)
+            
+            tail_wp_dist_to_goal = torch.linalg.norm(self.desired_position - self.p_tail[agent], dim=1)
+            tail_wp_dist_to_goal_reward = torch.exp(-1.0 * tail_wp_dist_to_goal)
 
             reward = {
                 "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
+                "tail_wp_dist_to_goal": tail_wp_dist_to_goal_reward * self.cfg.tail_wp_dist_to_goal_reward_weight * self.step_dt,
                 "mutual_collision_avoidance": mutual_collision_avoidance_reward / self.cfg.num_drones * self.cfg.mutual_collision_avoidance_reward_weight * self.step_dt,
             }
             reward = torch.sum(torch.stack(list(reward.values())), dim=0)
