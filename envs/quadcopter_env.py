@@ -62,7 +62,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     control_decimation = physics_freq // control_freq
     decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     render_decimation = physics_freq // gui_render_freq
-    observation_space = 13
+    observation_space = 9
     state_space = 0
 
     # MINCO trajectory
@@ -265,7 +265,6 @@ class QuadcopterEnv(DirectRLEnv):
         obs = torch.cat(
             [
                 goal_in_body_frame,
-                self.robot.data.root_quat_w.clone(),
                 self.robot.data.root_vel_w.clone(),
             ],
             dim=-1,

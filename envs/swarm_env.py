@@ -34,7 +34,7 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
     tail_wp_dist_to_goal_reward_weight = 0.0  # Reward for tail waypoints to approach the goal
     success_reward_weight = 10.0  # Additional reward while reaching goal
-    time_penalty_weight = 0.2  # Penalty for time spent in each step
+    time_penalty_weight = 0.0  # Penalty for time spent in each step
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_max
     mutual_collision_avoidance_reward_weight = 1.0  # Reward for mutual collision avoidance between drones
 
@@ -43,11 +43,10 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     speed_deviation_tolerance = 0.5  # Tolerance for deviation from v_max
 
     success_distance_threshold = 1.5  # Distance threshold for considering goal reached
-    safe_dist = 1.3
-    critical_dist = 0.5
+    safe_dist = 1.0
 
     # Env
-    episode_length_s = 20.0
+    episode_length_s = 30.0
     physics_freq = 200
     control_freq = 100
     mpc_freq = 10
@@ -57,7 +56,7 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     render_decimation = physics_freq // gui_render_freq
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
-    observation_spaces = {agent: 13 for agent in possible_agents}
+    observation_spaces = {agent: 9 + 3 * (4 - 1) for agent in possible_agents}  # 9 + 3 * (num_drones - 1)
     state_space = 0
 
     # MINCO trajectory
@@ -150,6 +149,14 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             for agent in self.cfg.possible_agents
         }
         self.control_counter = 0
+
+        self.relative_positions = {}
+        for i in range(self.cfg.num_drones):
+            self.relative_positions[i] = {}
+            for j in range(self.cfg.num_drones):
+                if i == j:
+                    continue
+                self.relative_positions[i][j] = torch.zeros(self.num_envs, 3, device=self.device)
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
@@ -275,52 +282,47 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.execution_time += self.physics_dt
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
-        observations = {}
-        for agent in self.possible_agents:
-            goal_in_body_frame = quat_rotate(quat_inv(self.robots[agent].data.root_quat_w), self.desired_position - self.robots[agent].data.root_pos_w)
-            obs = torch.cat(
-                [
-                    goal_in_body_frame,
-                    self.robots[agent].data.root_quat_w.clone(),
-                    self.robots[agent].data.root_vel_w.clone(),
-                ],
-                dim=-1,
-            )
-            observations[agent] = obs
-            
         self.reset_goal_timer += self.step_dt
-        reset_goal_idx = self.reset_goal_timer > 3.0
+        reset_goal_idx = self.reset_goal_timer > 10.0
         if reset_goal_idx.any():
             self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(0.0, 10.0)
             self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
             self.desired_position[reset_goal_idx, 2] = torch.zeros_like(self.desired_position[reset_goal_idx, 2]).uniform_(1.0, 1.3)
             self.reset_goal_timer[reset_goal_idx] = 0.0
-        
+
+        observations = {}
+        for i, agent in enumerate(self.possible_agents):
+            goal_in_body_frame = quat_rotate(quat_inv(self.robots[agent].data.root_quat_w), self.desired_position - self.robots[agent].data.root_pos_w)
+
+            relative_positions = []
+            for j, _ in enumerate(self.possible_agents):
+                if i == j:
+                    continue
+                relative_positions.append(self.relative_positions[i][j])
+            relative_positions = torch.cat(relative_positions, dim=-1)
+
+            obs = torch.cat(
+                [
+                    goal_in_body_frame,
+                    self.robots[agent].data.root_vel_w.clone(),
+                    relative_positions,
+                ],
+                dim=-1,
+            )
+            observations[agent] = obs
+
         return observations
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         rewards = {}
 
         mutual_collision_avoidance_reward = torch.zeros(self.num_envs, device=self.device)
-        for i, agent_i in enumerate(self.possible_agents):
-            for _, agent_j in enumerate(self.possible_agents[i + 1 :], i + 1):
-                dist_btw_drones = torch.linalg.norm(self.robots[agent_i].data.root_pos_w - self.robots[agent_j].data.root_pos_w, dim=1)
+        for i in range(self.cfg.num_drones):
+            for j in range(i + 1, self.cfg.num_drones):
+                dist_btw_drones = torch.linalg.norm(self.relative_positions[i][j], dim=1)
 
-                unsafe_idx = dist_btw_drones < self.cfg.safe_dist
-                if unsafe_idx.any():
-                    unsafe_dist = dist_btw_drones[unsafe_idx]
-
-                    critical_idx = unsafe_dist <= self.cfg.critical_dist
-                    noncritical_idx = ~critical_idx
-
-                    collision_penalty = torch.zeros_like(unsafe_dist)
-                    if critical_idx.any():
-                        collision_penalty[critical_idx] = 1000.0
-                    if noncritical_idx.any():
-                        noncritical_dist = unsafe_dist[noncritical_idx]
-                        collision_penalty[noncritical_idx] = 1 / (noncritical_dist - self.cfg.critical_dist) - 1 / (self.cfg.safe_dist - self.cfg.critical_dist)
-
-                    mutual_collision_avoidance_reward[unsafe_idx] -= collision_penalty
+                collision_penalty = 1.0 / (1.0 + torch.exp(77 * (dist_btw_drones - self.cfg.safe_dist)))
+                mutual_collision_avoidance_reward -= collision_penalty
 
         for agent in self.possible_agents:
             dist_to_goal = torch.linalg.norm(self.desired_position - self.robots[agent].data.root_pos_w, dim=1)
@@ -354,6 +356,14 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         return rewards
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        # For now, the computation of relative positions is best performed at the beginning of _get_dones,
+        # since _get_dones is executed in the step function of DirectMARLEnv immediately after physics stepping.
+        for i, agent_i in enumerate(self.possible_agents):
+            for j, agent_j in enumerate(self.possible_agents):
+                if i == j:
+                    continue
+                self.relative_positions[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
+
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.5, self.robots[agent].data.root_link_pos_w[:, 2] > 10.0)
@@ -397,6 +407,13 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             self.robots[agent].write_root_pose_to_sim(default_root_state[:, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
             self.robots[agent].write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+        # Update relative positions
+        for i, agent_i in enumerate(self.possible_agents):
+            for j, agent_j in enumerate(self.possible_agents):
+                if i == j:
+                    continue
+                self.relative_positions[i][j][env_ids] = self.robots[agent_j].data.root_pos_w[env_ids] - self.robots[agent_i].data.root_pos_w[env_ids]
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
