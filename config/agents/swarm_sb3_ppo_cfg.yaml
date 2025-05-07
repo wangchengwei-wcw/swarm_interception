@@ -2,18 +2,18 @@
 seed: 42
 
 policy_kwargs: "dict(
-                    log_std_init=0,
+                    log_std_init=-2.302585093,
                     ortho_init=False,
                     activation_fn=nn.ReLU,
-                    net_arch=dict(pi=[256, 256, 128], vf=[256, 256, 128]),
+                    net_arch=dict(pi=[256, 256, 128], vf=[512, 512, 256, 128]),
                 )"
 device: "cpu"
 n_timesteps: !!float 1e8
-batch_size: 256
-n_steps: 64
+batch_size: 16000
+n_steps: 32
 gamma: 0.99
-learning_rate: !!float 3e-4
-ent_coef: 0.0
+learning_rate: !!float 1e-4
+ent_coef: 0.0005
 clip_range: 0.2
 n_epochs: 4
 gae_lambda: 0.95

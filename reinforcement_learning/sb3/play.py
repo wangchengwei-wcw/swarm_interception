@@ -15,13 +15,13 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional Includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during playing.")
 parser.add_argument("--video_length", type=int, default=300, help="Length of the recorded video (in frames).")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
-parser.add_argument("--real_time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--real_time", action="store_true", default=True, help="Run in real-time, if possible.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # Parse the arguments
@@ -49,13 +49,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 import gymnasium as gym
 from loguru import logger
-import numpy as np
 import rclpy
 import time
 import torch
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import VecNormalize
 
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 from isaaclab_rl.sb3 import Sb3VecEnvWrapper, process_sb3_cfg
@@ -74,7 +72,8 @@ def main():
     log_root_path = os.path.join("outputs", "sb3", args_cli.task, "flowline")
     log_root_path = os.path.abspath(log_root_path)
     if args_cli.checkpoint is None:
-        checkpoint_path = get_checkpoint_path(log_root_path, ".*", "model_final.zip", ["models"])
+        checkpoint_path = get_checkpoint_path(log_root_path, other_dirs=["models"])
+        logger.info(f"No checkpoint specified, using auto-detected checkpoint from {checkpoint_path} ~(^v^)~")
     else:
         checkpoint_path = args_cli.checkpoint
     log_dir = os.path.dirname(checkpoint_path)
@@ -98,17 +97,6 @@ def main():
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     env = Sb3VecEnvWrapper(env)
-
-    if "normalize_input" in agent_cfg:
-        env = VecNormalize(
-            env,
-            training=True,
-            norm_obs="normalize_input" in agent_cfg and agent_cfg.pop("normalize_input"),
-            norm_reward="normalize_value" in agent_cfg and agent_cfg.pop("normalize_value"),
-            clip_obs="clip_obs" in agent_cfg and agent_cfg.pop("clip_obs"),
-            gamma=agent_cfg["gamma"],
-            clip_reward=np.inf,
-        )
 
     agent = PPO.load(checkpoint_path, env, device=agent_cfg["device"])
 

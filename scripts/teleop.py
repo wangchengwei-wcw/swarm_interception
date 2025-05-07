@@ -13,10 +13,10 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional Includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--velocity", type=float, default=8.0, help="Velocity of teleoperation.")
+parser.add_argument("--velocity", type=float, default=5.0, help="Velocity of teleoperation.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # Parse the arguments

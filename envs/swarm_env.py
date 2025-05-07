@@ -10,7 +10,6 @@ from collections.abc import Sequence
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, ViewerCfg
-from isaaclab.envs.ui import BaseEnvWindow
 from isaaclab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -28,12 +27,12 @@ from utils.controller import Controller
 @configclass
 class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(3.0, -3.0, 20.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
     # Reward weights
     dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
     tail_wp_dist_to_goal_reward_weight = 0.0  # Reward for tail waypoints to approach the goal
-    success_reward_weight = 10.0  # Additional reward while reaching goal
+    success_reward_weight = 100.0  # Additional reward while reaching goal
     time_penalty_weight = 0.0  # Penalty for time spent in each step
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_max
     mutual_collision_avoidance_reward_weight = 1.0  # Reward for mutual collision avoidance between drones
@@ -42,40 +41,44 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     tail_wp_dist_to_goal_scale = 0.5  # Exponential decay factor for tail waypoints distance to goal
     speed_deviation_tolerance = 0.5  # Tolerance for deviation from v_max
 
-    success_distance_threshold = 1.5  # Distance threshold for considering goal reached
+    success_distance_threshold = 1.0  # Distance threshold for considering goal reached
+    goal_reset_period = 7.0  # Time period for resetting goal
+    goal_range = 13.0  # Range of xy coordinates of the goal
     safe_dist = 1.0
 
     # Env
     episode_length_s = 30.0
-    physics_freq = 200
-    control_freq = 100
-    mpc_freq = 10
-    gui_render_freq = 50
+    physics_freq = 200.0
+    control_freq = 100.0
+    mpc_freq = 10.0
+    gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     num_drones = 4  # Number of drones per environment
     decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     render_decimation = physics_freq // gui_render_freq
     possible_agents = [f"drone_{i}" for i in range(num_drones)]
-    observation_spaces = {agent: 9 + 3 * (4 - 1) for agent in possible_agents}  # 9 + 3 * (num_drones - 1)
-    state_space = 0
+    state_space = -1
 
     # MINCO trajectory
     num_pieces = 6
     duration = 0.3
     a_max = {agent: 10.0 for agent in possible_agents}
-    v_max = {agent: 5.0 for agent in possible_agents}
+    v_max = {agent: 3.0 for agent in possible_agents}
 
     # FIXME: @configclass doesn't support the following syntax #^#
-    # p_max = {agent: num_pieces * v_max[agent] * duration for agent in possible_agents}
-    # action_space = {agent: 3 * (num_pieces + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
-    p_max = {agent: 6 * 5.0 * 0.3 for agent in possible_agents}
-    action_spaces = {agent: 3 * (6 + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
+    # observation_spaces = {agent: 9 + 3 * (num_drones - 1) for agent in possible_agents}
+    observation_spaces = {agent: 9 + 3 * (4 - 1) for agent in possible_agents}
 
-    clip_action = 100  # Default bound for box action spaces in IsaacLab Sb3VecEnvWrapper
+    # p_max = {agent: num_pieces * v_max[agent] * duration for agent in possible_agents}
+    p_max = {agent: 6 * 3.0 * 0.3 for agent in possible_agents}
+
+    # action_space = {agent: 3 * (num_pieces + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
+    action_spaces = {agent: 3 * (6 + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
+    clip_action = 1.0
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 200,
+        dt=1 / physics_freq,
         render_interval=render_decimation,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -100,7 +103,7 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1024, env_spacing=13, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2000, env_spacing=13, replicate_physics=True)
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
@@ -126,7 +129,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         # Goal position
         self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
-        self.desired_position[:, :2] = torch.zeros_like(self.desired_position[:, :2]).uniform_(0.0, 10.0)
+        self.desired_position[:, :2] = torch.zeros_like(self.desired_position[:, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
         self.desired_position[:, :2] += self.terrain.env_origins[:, :2]
         self.desired_position[:, 2] = torch.zeros_like(self.desired_position[:, 2]).uniform_(1.0, 1.3)
         self.reset_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -283,9 +286,9 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         self.reset_goal_timer += self.step_dt
-        reset_goal_idx = self.reset_goal_timer > 10.0
+        reset_goal_idx = self.reset_goal_timer > self.cfg.goal_reset_period
         if reset_goal_idx.any():
-            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(0.0, 10.0)
+            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
             self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
             self.desired_position[reset_goal_idx, 2] = torch.zeros_like(self.desired_position[reset_goal_idx, 2]).uniform_(1.0, 1.3)
             self.reset_goal_timer[reset_goal_idx] = 0.0
@@ -298,7 +301,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             for j, _ in enumerate(self.possible_agents):
                 if i == j:
                     continue
-                relative_positions.append(self.relative_positions[i][j])
+                relative_positions.append(self.relative_positions[i][j].clone())
             relative_positions = torch.cat(relative_positions, dim=-1)
 
             obs = torch.cat(
@@ -393,7 +396,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
-        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(0.0, 10.0)
+        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
         self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
         self.desired_position[env_ids, 2] = torch.zeros_like(self.desired_position[env_ids, 2]).uniform_(1.0, 1.3)
         self.reset_goal_timer[env_ids] = 0.0
@@ -472,5 +475,8 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": QuadcopterSwarmEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:swarm_sb3_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ppo_cfg.yaml",
+        "skrl_ippo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ippo_cfg.yaml",
+        "skrl_mappo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_mappo_cfg.yaml",
     },
 )

@@ -15,7 +15,7 @@ class Controller:
         self.K_min_norm_collec_acc = 3
         self.K_max_ang = 45
         self.K_max_bodyrates_feedback = 4
-        self.K_max_angular_acc = 60
+        self.K_max_angular_acc = 250
 
         self.step_dt = step_dt
         self.gravity = gravity.to(dtype=torch.float32)

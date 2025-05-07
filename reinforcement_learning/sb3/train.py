@@ -19,16 +19,16 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional Includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0; FAST-Quadcopter-Swarm-Direct-v0.",
 )
-parser.add_argument("--num_envs", type=int, default=8192, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=10000, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--save_interval", type=int, default=5e6, help="Interval between checkpoints (in steps).")
+parser.add_argument("--save_interval", type=int, default=1e7, help="Interval between checkpoints (in steps).")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=300, help="Length of the recorded video (in frames).")
-parser.add_argument("--pretrained_model", type=str, default=None, help="Path to the pre-trained model.")
+parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # Parse the arguments
@@ -59,7 +59,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from datetime import datetime
 import gymnasium as gym
 from loguru import logger
-import numpy as np
 import random
 import rclpy
 import shutil
@@ -67,7 +66,6 @@ import shutil
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.logger import configure
-from stable_baselines3.common.vec_env import VecNormalize
 
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, DirectRLEnvCfg, multi_agent_to_single_agent
 from isaaclab.utils.io import dump_yaml
@@ -94,12 +92,13 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     if args_cli.max_iterations is not None:
         agent_cfg["n_timesteps"] = args_cli.max_iterations * agent_cfg["n_steps"] * env_cfg.scene.num_envs
 
-    run_info = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_root_path = os.path.abspath(os.path.join("outputs", "sb3", args_cli.task, "flowline"))
+    run_info = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = os.path.join(log_root_path, run_info)
     # Dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+
     env_dir = os.path.join(os.path.dirname(__file__), "../../", "envs")
     dump_env_src_dir = os.path.join(log_dir, "src")
     os.makedirs(dump_env_src_dir, exist_ok=True)
@@ -133,19 +132,8 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
 
     env = Sb3VecEnvWrapper(env)
 
-    if "normalize_input" in agent_cfg:
-        env = VecNormalize(
-            env,
-            training=True,
-            norm_obs="normalize_input" in agent_cfg and agent_cfg.pop("normalize_input"),
-            norm_reward="normalize_value" in agent_cfg and agent_cfg.pop("normalize_value"),
-            clip_obs="clip_obs" in agent_cfg and agent_cfg.pop("clip_obs"),
-            gamma=agent_cfg["gamma"],
-            clip_reward=np.inf,
-        )
-
-    if args_cli.pretrained_model:
-        agent = PPO.load(args_cli.pretrained_model, env=env, device=agent_cfg["device"])
+    if args_cli.checkpoint:
+        agent = PPO.load(args_cli.checkpoint, env=env, device=agent_cfg["device"])
     else:
         if args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
             agent_cfg["policy_kwargs"]["num_agents"] = env_cfg.num_drones

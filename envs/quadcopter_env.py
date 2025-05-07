@@ -14,7 +14,6 @@ from geometry_msgs.msg import AccelStamped, Vector3Stamped, PointStamped
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg, ViewerCfg
-from isaaclab.envs.ui import BaseEnvWindow
 from isaaclab.markers import VisualizationMarkersCfg, VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -32,33 +31,42 @@ from utils.controller import Controller
 @configclass
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(3.0, -3.0, 20.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
     # Reward weights
-    dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
-    tail_wp_dist_to_goal_reward_weight = 1.0  # Reward for tail waypoint to approach the goal
-    success_reward_weight = 100.0  # Additional reward while reaching goal
-    time_penalty_weight = 0.5  # Penalty for time spent in each step
-    speed_maintenance_reward_weight = 1.0  # Reward for maintaining speed close to v_max
+    to_live_reward_weight = 1.0  # 活着
+    death_penalty_weight = 0.0
+    dist_to_goal_reward_weight = 1.0
+    tail_wp_dist_to_goal_reward_weight = 0.0
+    success_reward_weight = 0.0
+    time_penalty_weight = 0.0
+    speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_max
+    wps_z_deviation_reward_weight = 0.0  # Penalty for z-deviation from desired flight altitude
+    ang_vel_penalty_weight = 0.0
     dist_btw_wps_uniformity_reward_weight = 0.0  # Reward for uniform distances between waypoints
     angle_restriction_reward_weight = 0.0  # Reward for restricting angles between consecutive path segments
     action_temporal_smoothness_reward_weight = 0.0  # Reward for temporal smoothness of actions
 
-    dist_to_goal_scale = 0.3  # Exponential decay factor for distance to goal
-    tail_wp_dist_to_goal_scale = 0.3  # Exponential decay factor for tail waypoint distance to goal
-    speed_deviation_tolerance = 0.5  # Tolerance for deviation from v_max
-    dist_btw_wps_uniformity_scale = 10.0  # Exponential decay factor for waypoint distance uniformity
-    angle_restriction_scale = 10.0  # Exponential decay factor for angle restriction
-    action_temporal_smoothness_scale = 1.0  # Exponential decay factor for action temporal smoothness
+    # Exponential decay factors and tolerances
+    dist_to_goal_scale = 0.3
+    tail_wp_dist_to_goal_scale = 0.3
+    speed_deviation_tolerance = 0.5
+    wps_z_deviation_scale = 10.0
+    dist_btw_wps_uniformity_scale = 10.0
+    angle_restriction_scale = 10.0
+    action_temporal_smoothness_scale = 1.0
 
+    flight_altitude = 1.0  # Desired flight altitude
     success_distance_threshold = 0.3  # Distance threshold for considering goal reached
+    goal_reset_period = 10.0  # Time period for resetting goal
+    goal_range = 10.0  # Range of xy coordinates of the goal
 
     # Env
     episode_length_s = 30.0
-    physics_freq = 200
-    control_freq = 100
-    mpc_freq = 10
-    gui_render_freq = 50
+    physics_freq = 200.0
+    control_freq = 100.0
+    mpc_freq = 10.0
+    gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     render_decimation = physics_freq // gui_render_freq
@@ -66,13 +74,13 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     state_space = 0
 
     # MINCO trajectory
-    num_pieces = 6
+    num_pieces = 2
     duration = 0.3
     a_max = 10.0
-    v_max = 5.0
+    v_max = 3.0
     p_max = num_pieces * v_max * duration
     action_space = 3 * (num_pieces + 2)  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
-    clip_action = 100  # Default bound for box action spaces in IsaacLab Sb3VecEnvWrapper
+    clip_action = 1.0
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -101,7 +109,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=8192, env_spacing=10, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=10000, env_spacing=5, replicate_physics=True)
 
     # Robot
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -110,6 +118,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     debug_vis = True
     debug_vis_goal = True
     debug_vis_action = True
+    debug_vis_traj = True
 
 
 class QuadcopterEnv(DirectRLEnv):
@@ -126,9 +135,9 @@ class QuadcopterEnv(DirectRLEnv):
 
         # Goal position
         self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
-        self.desired_position[:, :2] = torch.zeros_like(self.desired_position[:, :2]).uniform_(0.0, 10.0)
+        self.desired_position[:, :2] = torch.zeros_like(self.desired_position[:, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
         self.desired_position[:, :2] += self.terrain.env_origins[:, :2]
-        self.desired_position[:, 2] = torch.zeros_like(self.desired_position[:, 2]).uniform_(1.0, 1.3)
+        self.desired_position[:, 2] = torch.ones_like(self.desired_position[:, 2])
         self.reset_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Logging
@@ -196,13 +205,16 @@ class QuadcopterEnv(DirectRLEnv):
         head_pva = torch.stack([p_odom, v_odom, a_odom], dim=2)
 
         # Waypoints
+        self.wps_z_deviation = []
         inner_pts = torch.zeros((self.num_envs, 3, self.cfg.num_pieces - 1), device=self.device)
         for i in range(self.cfg.num_pieces - 1):
             # Transform to world frame
             inner_pts[:, :, i] = quat_rotate(q_odom, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + p_odom
+            self.wps_z_deviation.append(torch.abs(inner_pts[:, 2, i] - self.cfg.flight_altitude))
 
         # Tail states, transformed to world frame
         self.p_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces - 1) : 3 * (self.cfg.num_pieces + 0)] * self.cfg.p_max) + p_odom
+        self.wps_z_deviation.append(torch.abs(self.p_tail[:, 2] - self.cfg.flight_altitude))
         v_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 0) : 3 * (self.cfg.num_pieces + 1)] * self.cfg.v_max)
         a_tail = quat_rotate(q_odom, self.waypoints[:, 3 * (self.cfg.num_pieces + 1) : 3 * (self.cfg.num_pieces + 2)] * self.cfg.a_max)
         tail_pva = torch.stack([self.p_tail, v_tail, a_tail], dim=2)
@@ -261,6 +273,14 @@ class QuadcopterEnv(DirectRLEnv):
         self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, env_ids=self.robot._ALL_INDICES)
 
     def _get_observations(self) -> dict:
+        self.reset_goal_timer += self.step_dt
+        reset_goal_idx = self.reset_goal_timer > self.cfg.goal_reset_period
+        if reset_goal_idx.any():
+            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+            self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
+            self.desired_position[reset_goal_idx, 2] = torch.ones_like(self.desired_position[reset_goal_idx, 2])
+            self.reset_goal_timer[reset_goal_idx] = 0.0
+
         goal_in_body_frame = quat_rotate(quat_inv(self.robot.data.root_quat_w), self.desired_position - self.robot.data.root_pos_w)
         obs = torch.cat(
             [
@@ -270,17 +290,12 @@ class QuadcopterEnv(DirectRLEnv):
             dim=-1,
         )
 
-        self.reset_goal_timer += self.step_dt
-        reset_goal_idx = self.reset_goal_timer > 3.0
-        if reset_goal_idx.any():
-            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(0.0, 10.0)
-            self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
-            self.desired_position[reset_goal_idx, 2] = torch.zeros_like(self.desired_position[reset_goal_idx, 2]).uniform_(1.0, 1.3)
-            self.reset_goal_timer[reset_goal_idx] = 0.0
-
         return {"policy": obs, "odom": self.robot.data.root_state_w.clone()}
 
     def _get_rewards(self) -> torch.Tensor:
+        died, _ = self._get_dones()
+        death_penalty = torch.where(died, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
+
         # Goal reaching reward
         dist_to_goal = torch.linalg.norm(self.desired_position - self.robot.data.root_pos_w, dim=1)
         dist_to_goal_reward = torch.exp(-self.cfg.dist_to_goal_scale * dist_to_goal)
@@ -291,9 +306,9 @@ class QuadcopterEnv(DirectRLEnv):
         success = dist_to_goal < self.cfg.success_distance_threshold
         unsuccess = ~success
         # Additional reward when the drone is close to goal
-        success_reward = torch.where(success, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
+        success_reward = torch.where(success, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
         # Time penalty for not reaching the goal
-        time_penalty = torch.where(unsuccess, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
+        time_penalty = torch.where(unsuccess, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
 
         # Reward for maintaining speed close to v_max
         v_curr = torch.linalg.norm(self.robot.data.root_lin_vel_w, dim=1)
@@ -303,6 +318,14 @@ class QuadcopterEnv(DirectRLEnv):
         wps = [torch.zeros(self.num_envs, 3, device=self.device)]
         for i in range(self.cfg.num_pieces):
             wps.append(self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max)
+
+        wps_z_deviation = torch.stack(self.wps_z_deviation, dim=1)
+        wps_z_deviation_mean = torch.mean(wps_z_deviation, dim=1)
+        wps_z_deviation_reward = torch.exp(-self.cfg.wps_z_deviation_scale * wps_z_deviation_mean)
+
+        ## ============= Smoothing ============= ##
+        ang_vel_penalty = torch.linalg.norm(self.robot.data.root_ang_vel_w, dim=1)
+
         # Calculate coefficient of variation (CV) of distances
         if self.cfg.num_pieces > 1:
             dist_btw_wps = []
@@ -344,11 +367,16 @@ class QuadcopterEnv(DirectRLEnv):
         self.prev_waypoints = self.waypoints.clone()
 
         reward = {
+            "to_live": torch.ones(self.num_envs, device=self.device) * self.cfg.to_live_reward_weight * self.step_dt,
+            "death_penalty": -death_penalty * self.cfg.death_penalty_weight,
             "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
             "tail_wp_dist_to_goal": tail_wp_dist_to_goal_reward * self.cfg.tail_wp_dist_to_goal_reward_weight * self.step_dt,
             "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
             "time_penalty": -time_penalty * self.cfg.time_penalty_weight * self.step_dt,
             "speed_maintenance": speed_maintenance_reward * self.cfg.speed_maintenance_reward_weight * self.step_dt,
+            "wps_z_deviation": wps_z_deviation_reward * self.cfg.wps_z_deviation_reward_weight * self.step_dt,
+            ## ============= Smoothing ============= ##
+            "ang_vel_penalty": -ang_vel_penalty * self.cfg.ang_vel_penalty_weight * self.step_dt,
             "dist_btw_wps_uniformity": dist_btw_wps_uniformity_reward * self.cfg.dist_btw_wps_uniformity_reward_weight * self.step_dt,
             "angle_restriction": angle_restriction_reward * self.cfg.angle_restriction_reward_weight * self.step_dt,
             "action_temporal_smoothness": action_temporal_smoothness_reward * self.cfg.action_temporal_smoothness_reward_weight * self.step_dt,
@@ -394,9 +422,9 @@ class QuadcopterEnv(DirectRLEnv):
         self.has_prev_traj[env_ids].fill_(False)
 
         # Sample new commands
-        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(0.0, 10.0)
+        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
         self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_position[env_ids, 2] = torch.zeros_like(self.desired_position[env_ids, 2]).uniform_(1.0, 1.3)
+        self.desired_position[env_ids, 2] = torch.ones_like(self.desired_position[env_ids, 2])
         self.reset_goal_timer[env_ids] = 0.0
 
         # Reset robot state
@@ -439,14 +467,35 @@ class QuadcopterEnv(DirectRLEnv):
                         self.waypoint_visualizers.append(VisualizationMarkers(marker_cfg))
                         self.waypoint_visualizers[i].set_visibility(True)
 
+            if self.cfg.debug_vis_traj:
+                if not hasattr(self, "traj_visualizers"):
+                    self.traj_visualizers = []
+                    self.resolution = 100
+                    for i in range(self.cfg.num_pieces * self.resolution):
+                        marker_cfg = VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/Command/traj_pt_{i}",
+                            markers={"sphere": sim_utils.SphereCfg(radius=0.008, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.1, 1.0)))},
+                        )
+                        self.traj_visualizers.append(VisualizationMarkers(marker_cfg))
+                        self.traj_visualizers[i].set_visibility(True)
+
     def _debug_vis_callback(self, event):
         if hasattr(self, "goal_pos_visualizer"):
             self.goal_pos_visualizer.visualize(translations=self.desired_position)
 
-        if self.visualize_new_cmd and hasattr(self, "waypoint_visualizers"):
-            for i in range(self.cfg.num_pieces):
-                waypoint_world = quat_rotate(self.q_odom_for_vis, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + self.p_odom_for_vis
-                self.waypoint_visualizers[i].visualize(translations=waypoint_world)
+        if self.visualize_new_cmd:
+            if hasattr(self, "waypoint_visualizers"):
+                for i in range(self.cfg.num_pieces):
+                    waypoint_world = quat_rotate(self.q_odom_for_vis, self.waypoints[:, 3 * i : 3 * (i + 1)] * self.cfg.p_max) + self.p_odom_for_vis
+                    self.waypoint_visualizers[i].visualize(translations=waypoint_world)
+
+            if hasattr(self, "traj_visualizers"):
+                traj_dur = self.traj.get_total_duration()
+                resolution = traj_dur / (self.cfg.num_pieces * self.resolution)
+                for i in range(self.cfg.num_pieces * self.resolution):
+                    traj_pt_world = self.traj.get_pos(i * resolution)
+                    self.traj_visualizers[i].visualize(translations=traj_pt_world)
+
             self.visualize_new_cmd = False
 
     def _publish_debug_signals(self):
@@ -569,5 +618,6 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": QuadcopterEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:quadcopter_sb3_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:quadcopter_skrl_ppo_cfg.yaml",
     },
 )

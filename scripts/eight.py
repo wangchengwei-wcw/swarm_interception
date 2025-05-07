@@ -13,7 +13,7 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional Includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 # Append AppLauncher cli args

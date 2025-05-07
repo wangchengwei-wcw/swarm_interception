@@ -11,7 +11,6 @@ import isaacsim.core.utils.prims as prim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg, ViewerCfg
 from isaaclab.sensors import TiledCamera, TiledCameraCfg, save_images_to_file
-from isaaclab.envs.ui import BaseEnvWindow
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -26,36 +25,16 @@ from utils.minco import MinJerkOpt
 from utils.controller import Controller
 
 
-class QuadcopterEnvWindow(BaseEnvWindow):
-    """Window manager for the Quadcopter environment"""
-
-    def __init__(self, env: QuadcopterCameraEnv, window_name: str = "IsaacLab"):
-        """Initialize the window
-
-        Args:
-            env: The environment object
-            window_name: The name of the window. Defaults to "IsaacLab"
-        """
-        # Initialize base window
-        super().__init__(env, window_name)
-        # Add custom UI elements
-        with self.ui_window_elements["main_vstack"]:
-            with self.ui_window_elements["debug_frame"]:
-                with self.ui_window_elements["debug_vstack"]:
-                    # Add command manager visualization
-                    self._create_debug_vis_ui_element("targets", self.env)
-
-
 @configclass
 class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(3.0, -3.0, 23.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
     # Env
-    physics_freq = 200
-    control_freq = 100
-    mpc_freq = 10
-    episode_length_s = 60.0
+    episode_length_s = 30.0
+    physics_freq = 200.0
+    control_freq = 100.0
+    mpc_freq = 10.0
     control_decimation = physics_freq // control_freq
     decimation = math.ceil(physics_freq / mpc_freq)  # Environment (replan) decimation
     state_space = 0
@@ -65,12 +44,10 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     num_pieces = 6
     duration = 0.3
     a_max = 10.0
-    v_max = 5.0
+    v_max = 3.0
     p_max = num_pieces * v_max * duration
     action_space = 3 * (num_pieces + 2)  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
-    clip_action = 100  # Default bound for box action spaces in IsaacLab Sb3VecEnvWrapper
-
-    ui_window_class_type = QuadcopterEnvWindow
+    clip_action = 1.0
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -99,7 +76,7 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=256, env_spacing=3, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=256, env_spacing=5, replicate_physics=True)
 
     # Robot
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -124,11 +101,6 @@ class QuadcopterRGBCameraEnvCfg(DirectRLEnvCfg):
     )
     observation_space = [tiled_camera.height, tiled_camera.width, 3]
     write_image_to_file = False
-
-    # Reward scales
-    lin_vel_reward_scale = -0.05
-    ang_vel_reward_scale = -0.01
-    dist_to_goal_reward_scale = 15.0
 
 
 @configclass
@@ -162,12 +134,6 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
         if 1 / self.cfg.mpc_freq > self.cfg.num_pieces * self.cfg.duration:
             raise ValueError("Replan period must be less than or equal to the total trajectory duration #^#")
-
-        # Goal position
-        self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
-
-        # Logging
-        self.episode_sums = {key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) for key in ["lin_vel", "ang_vel", "dist_to_goal"]}
 
         # Get specific indices
         self.body_id = self.robot.find_bodies("body")[0]
@@ -213,13 +179,16 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
         prim_utils.create_prim("/World/Objects", "Xform")
 
-        # FIXME: Bugs when using relative path of a USD file
+        # FIXME: Bugs while using relative path of USD files
         cfg_black_oak = sim_utils.UsdFileCfg(usd_path="/home/laji/Wss/e2e_swarm/swarm_rl/assets/black_oak_fall/Black_Oak_Fall.usd", scale=(0.008, 0.008, 0.008))
         cfg_black_oak.func("/World/Objects/Black_Oak", cfg_black_oak, translation=(8.0, 0.0, 0.1))
 
     def _pre_physics_step(self, actions: torch.Tensor):
         # Action parametrization: waypoints in body frame
         self.waypoints = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+
+        for i in range(self.cfg.num_pieces - 1):
+            self.waypoints[:, 3 * (i + 1) : 3 * (i + 2)] += self.waypoints[:, 3 * i : 3 * (i + 1)]
 
         # Head states
         p_odom = self.robot.data.root_state_w[:, :3]
@@ -308,20 +277,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        lin_vel = torch.sum(torch.square(self.robot.data.root_lin_vel_b), dim=1)
-        ang_vel = torch.sum(torch.square(self.robot.data.root_ang_vel_b), dim=1)
-        dist_to_goal = torch.linalg.norm(self.desired_position - self.robot.data.root_pos_w, dim=1)
-        dist_to_goal_mapped = 1 - torch.tanh(dist_to_goal / 0.8)
-        reward = {
-            "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
-            "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
-            "dist_to_goal": dist_to_goal_mapped * self.cfg.dist_to_goal_reward_scale * self.step_dt,
-        }
-        # Logging
-        for key, value in reward.items():
-            self.episode_sums[key] += value
-        reward = torch.sum(torch.stack(list(reward.values())), dim=0)
-        return reward
+        return torch.zeros(self.num_envs, device=self.device)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 10.0)
@@ -336,21 +292,6 @@ class QuadcopterCameraEnv(DirectRLEnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self.robot._ALL_INDICES
 
-        # Logging
-        final_dist_to_goal = torch.linalg.norm(self.desired_position[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1).mean()
-        extras = dict()
-        for key in self.episode_sums.keys():
-            episodic_sum_avg = torch.mean(self.episode_sums[key][env_ids])
-            extras["Episode_Reward/" + key] = episodic_sum_avg / self.max_episode_length_s
-            self.episode_sums[key][env_ids] = 0.0
-        self.extras["log"] = dict()
-        self.extras["log"].update(extras)
-        extras = dict()
-        extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
-        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
-        extras["Metrics/final_dist_to_goal"] = final_dist_to_goal.item()
-        self.extras["log"].update(extras)
-
         self.robot.reset(env_ids)
         super()._reset_idx(env_ids)
         if self.num_envs > 13 and len(env_ids) == self.num_envs:
@@ -358,11 +299,6 @@ class QuadcopterCameraEnv(DirectRLEnv):
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
         self.has_prev_traj[env_ids].fill_(False)
-
-        # Sample new commands
-        self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(-2.0, 2.0)
-        self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_position[env_ids, 2] = torch.zeros_like(self.desired_position[env_ids, 2]).uniform_(0.5, 1.5)
 
         # Reset robot state
         joint_pos = self.robot.data.default_joint_pos[env_ids]
