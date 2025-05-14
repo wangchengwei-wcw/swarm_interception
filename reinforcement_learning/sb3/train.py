@@ -24,10 +24,10 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=10000, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
-parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+parser.add_argument("--max_iterations", type=int, default=None, help="RL policy training iterations.")
 parser.add_argument("--save_interval", type=int, default=1e7, help="Interval between checkpoints (in steps).")
-parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=300, help="Length of the recorded video (in frames).")
+parser.add_argument("--video", action="store_true", default=True, help="Record videos during training.")
+parser.add_argument("--video_length", type=int, default=100, help="Length of the recorded video (in frames).")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)

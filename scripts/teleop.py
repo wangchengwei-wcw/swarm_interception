@@ -138,6 +138,9 @@ def main():
                         p_desired[:, 2] -= args_cli.velocity * dt
 
                     goal_in_body_frame = quat_rotate(quat_inv(q_odom), p_desired - p_odom)
+                    norm = goal_in_body_frame.norm(p=2, dim=1, keepdim=True)
+                    clip_scale = torch.where(norm > env_cfg.num_pieces * env_cfg.p_max, env_cfg.num_pieces * env_cfg.p_max / (norm + 1e-6), torch.ones_like(norm))
+                    goal_in_body_frame *= clip_scale
                     for i in range(env_cfg.num_pieces):
                         actions[:, 3 * i : 3 * (i + 1)] = goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max * env_cfg.clip_action
             else:
@@ -160,6 +163,9 @@ def main():
                             p_desired[drone][:, 2] -= args_cli.velocity * dt
 
                         goal_in_body_frame = quat_rotate(quat_inv(q_odom[drone]), p_desired[drone] - p_odom[drone])
+                        norm = goal_in_body_frame.norm(p=2, dim=1, keepdim=True)
+                        clip_scale = torch.where(norm > env_cfg.num_pieces * env_cfg.p_max[drone], env_cfg.num_pieces * env_cfg.p_max / (norm + 1e-6), torch.ones_like(norm))
+                        goal_in_body_frame *= clip_scale                        
                         for i in range(env_cfg.num_pieces):
                             actions[drone][:, 3 * i : 3 * (i + 1)] = goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max[drone] * env_cfg.clip_action
 

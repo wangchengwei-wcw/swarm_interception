@@ -148,7 +148,7 @@ class QuadcopterCameraEnv(DirectRLEnv):
         self.has_prev_traj = torch.tensor([False] * self.num_envs, device=self.device)
 
         # Controller
-        self.controller = Controller(1 / self.cfg.control_freq, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device))
+        self.controller = Controller(1 / self.cfg.control_freq, self.gravity, self.robot_mass.to(self.device), self.robot_inertia.to(self.device), self.num_envs)
         self.control_counter = 0
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
@@ -308,6 +308,8 @@ class QuadcopterCameraEnv(DirectRLEnv):
         self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+        self.controller.reset(env_ids)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # Create markers if necessary for the first time

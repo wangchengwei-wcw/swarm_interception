@@ -3,6 +3,7 @@ from __future__ import annotations
 import gymnasium as gym
 from loguru import logger
 import math
+import random
 import time
 import torch
 from collections.abc import Sequence
@@ -30,21 +31,25 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
     # Reward weights
-    dist_to_goal_reward_weight = 1.0  # Reward for approaching the goal
-    tail_wp_dist_to_goal_reward_weight = 0.0  # Reward for tail waypoints to approach the goal
-    success_reward_weight = 100.0  # Additional reward while reaching goal
-    time_penalty_weight = 0.0  # Penalty for time spent in each step
+    approaching_goal_reward_weight = 1.0
+    dist_to_goal_reward_weight = 0.0
+    tail_wp_dist_to_goal_reward_weight = 0.0
+    success_reward_weight = 100.0
+    time_penalty_weight = 0.0
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_max
-    mutual_collision_avoidance_reward_weight = 1.0  # Reward for mutual collision avoidance between drones
+    mutual_collision_avoidance_reward_weight = 0.001
 
-    dist_to_goal_scale = 0.5  # Exponential decay factor for distance to goal
-    tail_wp_dist_to_goal_scale = 0.5  # Exponential decay factor for tail waypoints distance to goal
-    speed_deviation_tolerance = 0.5  # Tolerance for deviation from v_max
+    # Exponential decay factors and tolerances
+    dist_to_goal_scale = 0.5
+    tail_wp_dist_to_goal_scale = 0.5
+    speed_deviation_tolerance = 0.5
 
+    flight_altitude = 1.0  # Desired flight altitude
     success_distance_threshold = 1.0  # Distance threshold for considering goal reached
-    goal_reset_period = 7.0  # Time period for resetting goal
-    goal_range = 13.0  # Range of xy coordinates of the goal
-    safe_dist = 1.0
+    goal_reset_period = 10.0  # Time period for resetting goal
+    goal_range = 10.0  # Range of xy coordinates of the goal
+    safe_dist = 0.5
+    rand_init_states = False  # Whether to randomly permute initial states among agents
 
     # Env
     episode_length_s = 30.0
@@ -60,20 +65,17 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
     state_space = -1
 
     # MINCO trajectory
-    num_pieces = 6
+    num_pieces = 3
     duration = 0.3
     a_max = {agent: 10.0 for agent in possible_agents}
     v_max = {agent: 3.0 for agent in possible_agents}
+    p_max = {agent: 0.6 for agent in possible_agents}
 
     # FIXME: @configclass doesn't support the following syntax #^#
-    # observation_spaces = {agent: 9 + 3 * (num_drones - 1) for agent in possible_agents}
-    observation_spaces = {agent: 9 + 3 * (4 - 1) for agent in possible_agents}
-
-    # p_max = {agent: num_pieces * v_max[agent] * duration for agent in possible_agents}
-    p_max = {agent: 6 * 3.0 * 0.3 for agent in possible_agents}
-
+    # observation_spaces = {agent: 13 + 3 * (num_drones - 1) for agent in possible_agents}
+    observation_spaces = {agent: 13 + 3 * (4 - 1) for agent in possible_agents}
     # action_space = {agent: 3 * (num_pieces + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
-    action_spaces = {agent: 3 * (6 + 2) for agent in possible_agents}  # inner_pts 3 x (num_pieces - 1) + tail_pva 3 x 3
+    action_spaces = {agent: 3 * (3 + 2) for agent in possible_agents}
     clip_action = 1.0
 
     # Simulation
@@ -107,7 +109,7 @@ class QuadcopterSwarmEnvCfg(DirectMARLEnvCfg):
 
     # Robot
     drone_cfg: ArticulationCfg = DJI_FPV_CFG.copy()
-    init_gap = 1.5
+    init_gap = 2.0
 
     # Debug visualization
     debug_vis = True
@@ -129,9 +131,6 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         # Goal position
         self.desired_position = torch.zeros(self.num_envs, 3, device=self.device)
-        self.desired_position[:, :2] = torch.zeros_like(self.desired_position[:, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-        self.desired_position[:, :2] += self.terrain.env_origins[:, :2]
-        self.desired_position[:, 2] = torch.zeros_like(self.desired_position[:, 2]).uniform_(1.0, 1.3)
         self.reset_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         # Get specific body indices for each drone
@@ -148,10 +147,14 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         # Controllers
         self.actions, self.a_desired_total, self.thrust_desired, self._thrust_desired, self.q_desired, self.w_desired, self.m_desired = {}, {}, {}, {}, {}, {}, {}
         self.controllers = {
-            agent: Controller(1 / self.cfg.control_freq, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device))
+            agent: Controller(
+                1 / self.cfg.control_freq, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device), self.num_envs
+            )
             for agent in self.cfg.possible_agents
         }
         self.control_counter = 0
+
+        self.prev_dist_to_goal = {}
 
         self.relative_positions = {}
         for i in range(self.cfg.num_drones):
@@ -290,7 +293,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         if reset_goal_idx.any():
             self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
             self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
-            self.desired_position[reset_goal_idx, 2] = torch.zeros_like(self.desired_position[reset_goal_idx, 2]).uniform_(1.0, 1.3)
+            self.desired_position[reset_goal_idx, 2] = torch.ones_like(self.desired_position[reset_goal_idx, 2]) * self.cfg.flight_altitude
             self.reset_goal_timer[reset_goal_idx] = 0.0
 
         observations = {}
@@ -307,6 +310,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             obs = torch.cat(
                 [
                     goal_in_body_frame,
+                    self.robots[agent].data.root_quat_w.clone(),
                     self.robots[agent].data.root_vel_w.clone(),
                     relative_positions,
                 ],
@@ -329,6 +333,11 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         for agent in self.possible_agents:
             dist_to_goal = torch.linalg.norm(self.desired_position - self.robots[agent].data.root_pos_w, dim=1)
+            approaching_goal_reward = torch.zeros(self.num_envs, device=self.device)
+            if agent in self.prev_dist_to_goal:
+                approaching_goal_reward = self.prev_dist_to_goal[agent] - dist_to_goal
+            self.prev_dist_to_goal[agent] = dist_to_goal
+
             dist_to_goal_reward = torch.exp(-self.cfg.dist_to_goal_scale * dist_to_goal)
 
             tail_wp_dist_to_goal = torch.linalg.norm(self.desired_position - self.p_tail[agent], dim=1)
@@ -337,15 +346,16 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
             success = dist_to_goal < self.cfg.success_distance_threshold
             unsuccess = ~success
             # Additional reward when the drone is close to goal
-            success_reward = torch.where(success, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
+            success_reward = torch.where(success, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
             # Time penalty for not reaching the goal
-            time_penalty = torch.where(unsuccess, torch.ones_like(dist_to_goal), torch.zeros_like(dist_to_goal))
+            time_penalty = torch.where(unsuccess, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
 
             # Reward for maintaining speed close to v_max
             v_curr = torch.linalg.norm(self.robots[agent].data.root_lin_vel_w, dim=1)
             speed_maintenance_reward = torch.exp(-((torch.abs(v_curr - self.cfg.v_max[agent]) / self.cfg.speed_deviation_tolerance) ** 2))
 
             reward = {
+                "approaching_goal": approaching_goal_reward * self.cfg.approaching_goal_reward_weight * self.step_dt,
                 "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
                 "tail_wp_dist_to_goal": tail_wp_dist_to_goal_reward * self.cfg.tail_wp_dist_to_goal_reward_weight * self.step_dt,
                 "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
@@ -360,7 +370,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         # For now, the computation of relative positions is best performed at the beginning of _get_dones,
-        # since _get_dones is executed in the step function of DirectMARLEnv immediately after physics stepping.
+        # since _get_dones is executed in the 'step' method of DirectMARLEnv immediately after physics stepping.
         for i, agent_i in enumerate(self.possible_agents):
             for j, agent_j in enumerate(self.possible_agents):
                 if i == j:
@@ -369,9 +379,10 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
 
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
-            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.5, self.robots[agent].data.root_link_pos_w[:, 2] > 10.0)
+            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.5, self.robots[agent].data.root_link_pos_w[:, 2] > 2.0)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
             _died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
+
             died = torch.logical_or(died, _died)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -398,18 +409,30 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
         # Sample new commands
         self.desired_position[env_ids, :2] = torch.zeros_like(self.desired_position[env_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
         self.desired_position[env_ids, :2] += self.terrain.env_origins[env_ids, :2]
-        self.desired_position[env_ids, 2] = torch.zeros_like(self.desired_position[env_ids, 2]).uniform_(1.0, 1.3)
+        self.desired_position[env_ids, 2] = torch.ones_like(self.desired_position[env_ids, 2]) * self.cfg.flight_altitude
         self.reset_goal_timer[env_ids] = 0.0
 
         # Reset robot state
+        # Randomly permute initial root and joint states among agents
+        agents = list(self.possible_agents)
+        permuted = agents.copy()
+        if self.cfg.rand_init_states:
+            random.shuffle(permuted)
+        mapping = dict(zip(agents, permuted))
         for agent in self.possible_agents:
-            joint_pos = self.robots[agent].data.default_joint_pos[env_ids]
-            joint_vel = self.robots[agent].data.default_joint_vel[env_ids]
-            default_root_state = self.robots[agent].data.default_root_state[env_ids]
+            rand_other_agent = mapping[agent]
+            joint_pos = self.robots[rand_other_agent].data.default_joint_pos[env_ids]
+            joint_vel = self.robots[rand_other_agent].data.default_joint_vel[env_ids]
+            default_root_state = self.robots[rand_other_agent].data.default_root_state[env_ids]
             default_root_state[:, :3] += self.terrain.env_origins[env_ids]
             self.robots[agent].write_root_pose_to_sim(default_root_state[:, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
             self.robots[agent].write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+            self.controllers[agent].reset(env_ids)
+
+            if agent in self.prev_dist_to_goal:
+                self.prev_dist_to_goal[agent][env_ids] = torch.linalg.norm(self.desired_position[env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
 
         # Update relative positions
         for i, agent_i in enumerate(self.possible_agents):
@@ -424,7 +447,7 @@ class QuadcopterSwarmEnv(DirectMARLEnv):
                 if not hasattr(self, "goal_pos_visualizer"):
                     marker_cfg = CUBOID_MARKER_CFG.copy()
                     marker_cfg.markers["cuboid"].size = (0.07, 0.07, 0.07)
-                    marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0))
+                    marker_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0))
                     marker_cfg.prim_path = "/Visuals/Command/goal"
                     self.goal_pos_visualizer = VisualizationMarkers(marker_cfg)
                 self.goal_pos_visualizer.set_visibility(True)

@@ -23,11 +23,12 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=10000, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
-parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--save_interval", type=int, default=1e4, help="Interval between checkpoints (in steps).")
-parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=300, help="Length of the recorded video (in steps).")
+parser.add_argument("--max_iterations", type=int, default=None, help="RL policy training iterations.")
+parser.add_argument("--save_interval", type=int, default=None, help="Interval between checkpoints (in steps).")
+parser.add_argument("--video", action="store_true", default=True, help="Record videos during training.")
+parser.add_argument("--video_length", type=int, default=100, help="Length of the recorded video (in steps).")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
+parser.add_argument("--initial_log_std", type=float, default=None, help="Initial log standard deviation of the Gaussian model.")
 parser.add_argument("--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes.")
 parser.add_argument("--ml_framework", type=str, default="torch", choices=["torch", "jax", "jax-numpy"], help="The ML framework used for training the skrl agent.")
 parser.add_argument("--algorithm", type=str, default="PPO", choices=["AMP", "PPO", "IPPO", "MAPPO"], help="The RL algorithm used for training the skrl agent.")
@@ -65,6 +66,7 @@ import os
 import random
 import rclpy
 import shutil
+import torch
 
 import skrl
 from packaging import version
@@ -123,9 +125,13 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     agent_cfg["agent"]["experiment"]["experiment_name"] = run_info
     log_dir = os.path.join(log_root_path, run_info)
 
-    save_interval = max(args_cli.save_interval, 1)
+    # FIXME: Not robust 并非鲁棒 :(
+    if args_cli.save_interval:
+        save_interval = max(args_cli.save_interval, 1)
+        agent_cfg["agent"]["experiment"]["checkpoint_interval"] = save_interval
+    else:
+        save_interval = agent_cfg["agent"]["experiment"]["checkpoint_interval"]
     agent_cfg["agent"]["experiment"]["write_interval"] = int(save_interval / 100)
-    agent_cfg["agent"]["experiment"]["checkpoint_interval"] = save_interval
 
     # Dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
@@ -166,6 +172,11 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None
     if resume_path:
         runner.agent.load(resume_path)
+
+        # FIXME: Improve to be more rational
+        if args_cli.initial_log_std is not None:
+            with torch.no_grad():
+                runner.agent.checkpoint_modules["policy"].log_std_parameter.data.fill_(args_cli.initial_log_std)
 
     runner.run()
 

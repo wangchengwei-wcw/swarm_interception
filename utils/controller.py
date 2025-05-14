@@ -6,11 +6,11 @@ from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_qua
 
 
 class Controller:
-    def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor):
+    def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor, num_envs: int):
         # Params
         self.kPp = torch.tensor([2.0, 2.0, 20.0], dtype=torch.float32, device=gravity.device)
         self.kPv = torch.tensor([3.0, 3.0, 30.0], dtype=torch.float32, device=gravity.device)
-        self.kPR = torch.tensor([15.0, 15.0, 15.0], dtype=torch.float32, device=gravity.device)
+        self.kPR = torch.tensor([10.0, 10.0, 10.0], dtype=torch.float32, device=gravity.device)
         self.kPw = torch.tensor([0.05, 0.05, 0.05], dtype=torch.float32, device=gravity.device)
         self.K_min_norm_collec_acc = 3
         self.K_max_ang = 45
@@ -22,9 +22,20 @@ class Controller:
         self.mass = mass.to(dtype=torch.float32)
         self.inertia = inertia.to(dtype=torch.float32)
 
-        self.w_old = None
-        self.thrust_old = None
-        self.w_last = None
+        self.w_old = torch.zeros(num_envs, 3, dtype=torch.float32, device=self.gravity.device)
+        self.thrust_old = torch.full((num_envs,), self.mass * self.gravity.norm(), dtype=torch.float32, device=self.gravity.device)
+        self.w_last = torch.zeros(num_envs, 3, dtype=torch.float32, device=self.gravity.device)
+        self.num_envs = num_envs
+
+    def reset(self, env_ids: torch.Tensor | None):
+        if env_ids is None:
+            self.w_old = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.gravity.device)
+            self.thrust_old = torch.full((self.num_envs,), self.mass * self.gravity.norm(), dtype=torch.float32, device=self.gravity.device)
+            self.w_last = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.gravity.device)
+        else:
+            self.w_old[env_ids] = torch.zeros(len(env_ids), 3, dtype=torch.float32, device=self.gravity.device)
+            self.thrust_old[env_ids] = torch.full((len(env_ids),), self.mass * self.gravity.norm(), dtype=torch.float32, device=self.gravity.device)
+            self.w_last[env_ids] = torch.zeros(len(env_ids), 3, dtype=torch.float32, device=self.gravity.device)
 
     def get_control(self, state_: torch.Tensor, action_: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         state = state_.clone().to(dtype=torch.float32)
@@ -51,22 +62,16 @@ class Controller:
             self.K_max_ang,
         )
 
-        thrust_desired, q_desired, w_desired = self.minimum_singularity_flat_with_drag(
-            q_odom, v_desired, translational_acc, j_desired, yaw_desired, yaw_dot_desired
-        )
+        thrust_desired, q_desired, w_desired = self.minimum_singularity_flat_with_drag(q_odom, v_desired, translational_acc, j_desired, yaw_desired, yaw_dot_desired)
         w_desired = quat_rotate(quat_inv(q_odom), quat_rotate(q_desired, w_desired))
 
-        thrustforce = quat_rotate(
-            q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device)
-        )
+        thrustforce = quat_rotate(q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device))
         total_des_acc = compute_limited_total_acc_from_thrust_force(thrustforce, self.mass, self.K_min_norm_collec_acc, self.K_max_ang)
         force_desired = total_des_acc * self.mass
 
         feedback_bodyrates = quat_rotate(q_odom, compute_feedback_control_bodyrates(q_odom, q_desired, self.kPR, self.K_max_bodyrates_feedback))
-        if self.w_last is None:
-            w_desired += feedback_bodyrates
-        else:
-            w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last, self.K_max_angular_acc, self.step_dt)
+
+        w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last, self.K_max_angular_acc, self.step_dt)
         self.w_last = w_desired
 
         thrust_desired, torque_desired = bodyrate_control(q_odom, w_odom, force_desired, w_desired, self.inertia, self.kPw)
@@ -85,21 +90,17 @@ class Controller:
         # dv >= dh is required
         # dv is the rotor drag effect in vertical direction, typical value is 0.35
         # dh is the rotor drag effect in horizontal direction, typical value is 0.25
-        # cp is the second-order drag effect, typical valye is 0.01
+        # cp is the second-order drag effect, typical value is 0.01
         dh = 0.0
         dv = 0.0
         cp = 0.0
 
-        # veps is a smnoothing constant, do not change it
+        # veps is a smoothing constant, do not change it
         veps = 0.02
 
         success, thrust_desired, q_desired, w_desired = flatness_with_drag(
             v_desired, a_desired, j_desired, yaw_desired, yaw_dot_desired, self.mass, self.gravity, cp, dv, dh, veps
         )
-
-        if self.w_old is None or self.thrust_old is None:
-            self.w_old = torch.zeros_like(v_desired, dtype=torch.float32)
-            self.thrust_old = self.mass * (a_desired + self.gravity).norm(dim=1)
 
         thrust_desired = torch.where(success, thrust_desired, self.thrust_old)
         q_desired = torch.where(success.unsqueeze(1), q_desired, q_odom)
@@ -128,9 +129,7 @@ def compute_pid_error_acc(
 
 
 @torch.jit.script
-def compute_limited_total_acc_from_thrust_force(
-    thrustforce: torch.Tensor, mass: torch.Tensor, K_min_norm_collec_acc: float, K_max_ang: float
-) -> torch.Tensor:
+def compute_limited_total_acc_from_thrust_force(thrustforce: torch.Tensor, mass: torch.Tensor, K_min_norm_collec_acc: float, K_max_ang: float) -> torch.Tensor:
 
     total_acc = thrustforce / mass
 
@@ -176,7 +175,7 @@ def flatness_with_drag(
     dh: float,
     veps: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    almost_zero = 1.0e-6
+    almost_zero = 1e-6
 
     v0, v1, v2 = v_desired[:, 0], v_desired[:, 1], v_desired[:, 2]
     a0, a1, a2 = a_desired[:, 0], a_desired[:, 1], a_desired[:, 2]
