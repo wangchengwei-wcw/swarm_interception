@@ -331,14 +331,14 @@ class QuadcopterCameraEnv(DirectRLEnv):
 
 
 gym.register(
-    id="FAST-Quadcopter-RGB-Camera-Direct-v0",
+    id="FAST-Quadcopter-RGB-Camera-v0",
     entry_point=QuadcopterCameraEnv,
     disable_env_checker=True,
     kwargs={"env_cfg_entry_point": QuadcopterRGBCameraEnvCfg},
 )
 
 gym.register(
-    id="FAST-Quadcopter-Depth-Camera-Direct-v0",
+    id="FAST-Quadcopter-Depth-Camera-v0",
     entry_point=QuadcopterCameraEnv,
     disable_env_checker=True,
     kwargs={"env_cfg_entry_point": QuadcopterDepthCameraEnvCfg},

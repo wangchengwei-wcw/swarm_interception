@@ -13,10 +13,14 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--velocity", type=float, default=5.0, help="Velocity of teleoperation.")
+parser.add_argument(
+    "--verbosity", type=str, default="INFO", choices=["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"], help="Verbosity level of the custom logger."
+)
+
 # Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # Parse the arguments
@@ -25,10 +29,11 @@ if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
 elif args_cli.task == "FAST-Quadcopter-Swarm-Direct-v0":
     raise ValueError("FAST-Quadcopter-Swarm-Direct-v0 is not supported for keyboard teleoperation #^#")
-elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
+elif args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
     args_cli.enable_cameras = True
-elif args_cli.task != "FAST-Quadcopter-Direct-v0":
-    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Direct-v0; FAST-Quadcopter-RGB-Camera-Direct-v0; FAST-Quadcopter-Depth-Camera-Direct-v0.")
+    args_cli.enable_cameras = True
+elif args_cli.task != "FAST-Quadcopter-Waypoint-v0":
+    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint-v0; FAST-Quadcopter-RGB-Camera-v0; FAST-Quadcopter-Depth-Camera-v0.")
 
 # Launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -100,6 +105,7 @@ def visualize_images_live(images):
 def main():
     # Create environment configuration
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric)
+    env_cfg.debug_vis_goal = False
     # Create environment
     env = gym.make(args_cli.task, cfg=env_cfg)
 
@@ -164,8 +170,10 @@ def main():
 
                         goal_in_body_frame = quat_rotate(quat_inv(q_odom[drone]), p_desired[drone] - p_odom[drone])
                         norm = goal_in_body_frame.norm(p=2, dim=1, keepdim=True)
-                        clip_scale = torch.where(norm > env_cfg.num_pieces * env_cfg.p_max[drone], env_cfg.num_pieces * env_cfg.p_max / (norm + 1e-6), torch.ones_like(norm))
-                        goal_in_body_frame *= clip_scale                        
+                        clip_scale = torch.where(
+                            norm > env_cfg.num_pieces * env_cfg.p_max[drone], env_cfg.num_pieces * env_cfg.p_max / (norm + 1e-6), torch.ones_like(norm)
+                        )
+                        goal_in_body_frame *= clip_scale
                         for i in range(env_cfg.num_pieces):
                             actions[drone][:, 3 * i : 3 * (i + 1)] = goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max[drone] * env_cfg.clip_action
 
@@ -188,7 +196,7 @@ def main():
                 for drone in env_cfg.possible_agents:
                     p_desired[drone][reset_env_ids] = p_odom[drone][reset_env_ids].clone()
 
-            if args_cli.task in ["FAST-Quadcopter-RGB-Camera-Direct-v0", "FAST-Quadcopter-Depth-Camera-Direct-v0"]:
+            if args_cli.task in ["FAST-Quadcopter-RGB-Camera-v0", "FAST-Quadcopter-Depth-Camera-v0"]:
                 visualize_images_live(obs["image"].cpu().numpy())
 
     # Close the simulator
@@ -197,7 +205,7 @@ def main():
 
 if __name__ == "__main__":
     logger.remove()
-    logger.add(sys.stdout, level="INFO")
+    logger.add(sys.stdout, level=args_cli.verbosity)
 
     rclpy.init()
     main()

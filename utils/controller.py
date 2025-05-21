@@ -308,3 +308,26 @@ def bodyrate_control(
     torque_desired = feedforward + kPw * (w_desired - w_odom)
 
     return thrust_desired, torque_desired
+
+
+@torch.jit.script
+def bodyrate_control_without_thrust(
+    w_odom: torch.Tensor,
+    w_desired: torch.Tensor,
+    inertia: torch.Tensor,
+    kPw: torch.Tensor,
+) -> torch.Tensor:
+
+    I = inertia.view(3, 3)
+    I_w_odom = torch.matmul(I, w_odom.transpose(0, 1))
+    feedforward = torch.stack(
+        [
+            w_odom[:, 1] * I_w_odom[2, :] - w_odom[:, 2] * I_w_odom[1, :],
+            w_odom[:, 2] * I_w_odom[0, :] - w_odom[:, 0] * I_w_odom[2, :],
+            w_odom[:, 0] * I_w_odom[1, :] - w_odom[:, 1] * I_w_odom[0, :],
+        ],
+        dim=1,
+    )
+    torque_desired = feedforward + kPw * (w_desired - w_odom)
+
+    return torque_desired

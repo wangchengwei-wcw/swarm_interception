@@ -15,7 +15,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [256, 256, 128]
+        layers: [1024, 512]
         activations: elu
     output: ACTIONS
   value:  # see deterministic_model parameters
@@ -24,7 +24,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [256, 256, 128]
+        layers: [1024, 512]
         activations: elu
     output: ONE
 
@@ -49,9 +49,9 @@ agent:
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.016
-  state_preprocessor: null
+  state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
-  shared_state_preprocessor: null
+  shared_state_preprocessor: RunningStandardScaler
   shared_state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler
   value_preprocessor_kwargs: null
