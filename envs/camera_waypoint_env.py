@@ -263,30 +263,6 @@ class CameraWaypointEnv(DirectRLEnv):
         # TODO: Only for visualization 0_0 Not working due to unknown reason :(
         self.robot.set_joint_velocity_target(self.robot.data.default_joint_vel, env_ids=self.robot._ALL_INDICES)
 
-    def _get_observations(self) -> dict:
-        data_type = "rgb" if "rgb" in self.cfg.tiled_camera.data_types else "depth"
-        if "rgb" in self.cfg.tiled_camera.data_types:
-            camera_data = self.tiled_camera.data.output[data_type] / 255.0
-
-            # Normalize the camera data for better training results
-            # mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
-            # camera_data -= mean_tensor
-
-        elif "depth" in self.cfg.tiled_camera.data_types:
-            camera_data = self.tiled_camera.data.output[data_type]
-            camera_data[camera_data == float("inf")] = 0
-            camera_data /= self.cfg.max_depth
-
-        observations = {"image": camera_data.clone(), "odom": self.robot.data.root_state_w.clone()}
-
-        if self.cfg.write_image_to_file:
-            save_images_to_file(observations["image"], f"quadcopter_{data_type}.png")
-
-        return observations
-
-    def _get_rewards(self) -> torch.Tensor:
-        return torch.zeros(self.num_envs, device=self.device)
-
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 2.0)
         ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
@@ -295,6 +271,9 @@ class CameraWaypointEnv(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
         return died, time_out
+
+    def _get_rewards(self) -> torch.Tensor:
+        return torch.zeros(self.num_envs, device=self.device)
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -318,6 +297,27 @@ class CameraWaypointEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
         self.controller.reset(env_ids)
+
+    def _get_observations(self) -> dict:
+        data_type = "rgb" if "rgb" in self.cfg.tiled_camera.data_types else "depth"
+        if "rgb" in self.cfg.tiled_camera.data_types:
+            camera_data = self.tiled_camera.data.output[data_type] / 255.0
+
+            # Normalize the camera data for better training results
+            # mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
+            # camera_data -= mean_tensor
+
+        elif "depth" in self.cfg.tiled_camera.data_types:
+            camera_data = self.tiled_camera.data.output[data_type]
+            camera_data[camera_data == float("inf")] = 0
+            camera_data /= self.cfg.max_depth
+
+        observations = {"image": camera_data.clone(), "odom": self.robot.data.root_state_w.clone()}
+
+        if self.cfg.write_image_to_file:
+            save_images_to_file(observations["image"], f"quadcopter_{data_type}.png")
+
+        return observations
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:

@@ -37,7 +37,7 @@ class QuadcopterBodyrateEnvCfg(DirectRLEnvCfg):
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 100.0
     time_penalty_weight = 0.0
-    speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_max
+    speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
     ang_vel_penalty_weight = 0.0
     action_temporal_smoothness_reward_weight = 0.0  # Reward for temporal smoothness of actions
 
@@ -97,7 +97,7 @@ class QuadcopterBodyrateEnvCfg(DirectRLEnvCfg):
     )
 
     # Scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=10000, env_spacing=5, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1000, env_spacing=5, replicate_physics=True)
 
     # Robot
     robot: ArticulationCfg = DJI_FPV_CFG.replace(prim_path="/World/envs/env_.*/Robot")
@@ -105,7 +105,6 @@ class QuadcopterBodyrateEnvCfg(DirectRLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
-    debug_vis_action = False
 
 
 class QuadcopterBodyrateEnv(DirectRLEnv):
@@ -189,27 +188,17 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
 
         self.robot.set_external_force_and_torque(self.thrust, self.moment, body_ids=self.body_id)
 
-    def _get_observations(self) -> dict:
-        self.reset_goal_timer += self.step_dt
-        reset_goal_idx = self.reset_goal_timer > self.cfg.goal_reset_period
-        if reset_goal_idx.any():
-            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
-            self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
-            self.desired_position[reset_goal_idx, 2] = torch.ones_like(self.desired_position[reset_goal_idx, 2]) * self.cfg.flight_altitude
-            self.reset_goal_timer[reset_goal_idx] = 0.0
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 2.0)
+        ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
+        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
-        goal_in_body_frame = quat_rotate(quat_inv(self.robot.data.root_quat_w), self.desired_position - self.robot.data.root_pos_w)
-        obs = torch.cat(
-            [
-                goal_in_body_frame,
-                self.robot.data.root_quat_w.clone(),
-                # self.robot.data.projected_gravity_b.clone(),
-                self.robot.data.root_vel_w.clone(),  # TODO: Try to have no velocity observations to reduce sim2real gap
-            ],
-            dim=-1,
-        )
+        time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        return {"policy": obs, "odom": self.robot.data.root_state_w.clone()}
+        if self.cfg.expand_goal_range and self.cfg.goal_range < 13:
+            self.cfg.goal_range += 1.0 / 10000
+
+        return died, time_out
 
     def _get_rewards(self) -> torch.Tensor:
         died, _ = self._get_dones()
@@ -231,7 +220,7 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
         # Time penalty for not reaching the goal
         time_reward = -torch.where(unsuccess, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
 
-        # Reward for maintaining speed close to v_max
+        # Reward for maintaining speed close to v_desired
         v_curr = torch.linalg.norm(self.robot.data.root_lin_vel_w, dim=1)
         speed_maintenance_reward = torch.exp(-((torch.abs(v_curr - self.cfg.v_desired) / self.cfg.speed_deviation_tolerance) ** 2))
 
@@ -265,18 +254,6 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
         reward = torch.sum(torch.stack(list(reward.values())), dim=0)
 
         return reward
-
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 2.0)
-        ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
-        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
-
-        time_out = self.episode_length_buf >= self.max_episode_length - 1
-
-        if self.cfg.expand_goal_range and self.cfg.goal_range < 13:
-            self.cfg.goal_range += 1.0 / 10000
-
-        return died, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -318,6 +295,28 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
 
         if hasattr(self, "prev_dist_to_goal"):
             self.prev_dist_to_goal[env_ids] = torch.linalg.norm(self.desired_position[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1)
+
+    def _get_observations(self) -> dict:
+        self.reset_goal_timer += self.step_dt
+        reset_goal_idx = self.reset_goal_timer > self.cfg.goal_reset_period
+        if reset_goal_idx.any():
+            self.desired_position[reset_goal_idx, :2] = torch.zeros_like(self.desired_position[reset_goal_idx, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
+            self.desired_position[reset_goal_idx, :2] += self.terrain.env_origins[reset_goal_idx, :2]
+            self.desired_position[reset_goal_idx, 2] = torch.ones_like(self.desired_position[reset_goal_idx, 2]) * self.cfg.flight_altitude
+            self.reset_goal_timer[reset_goal_idx] = 0.0
+
+        goal_in_body_frame = quat_rotate(quat_inv(self.robot.data.root_quat_w), self.desired_position - self.robot.data.root_pos_w)
+        obs = torch.cat(
+            [
+                goal_in_body_frame,
+                self.robot.data.root_quat_w.clone(),
+                # self.robot.data.projected_gravity_b.clone(),
+                self.robot.data.root_vel_w.clone(),  # TODO: Try to have no velocity observations to reduce sim2real gap
+            ],
+            dim=-1,
+        )
+
+        return {"policy": obs, "odom": self.robot.data.root_state_w.clone()}
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:

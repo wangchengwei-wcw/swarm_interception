@@ -40,8 +40,8 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
   class: PPO
-  # rollouts: 100  # 10s for waypoint env
-  rollouts: 500  # 10s for bodyrate env
+  # rollouts: 100  # 10 steps/sec for waypoint envs
+  rollouts: 500  # 50 steps/sec for bodyrate envs
   learning_epochs: 5
   mini_batches: 2
   discount_factor: 0.99
@@ -50,7 +50,7 @@ agent:
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.016
-  state_preprocessor: null
+  state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler  # GG w/o value preprocessor :(
   value_preprocessor_kwargs: null
@@ -60,7 +60,7 @@ agent:
   ratio_clip: 0.2
   value_clip: 0.2
   clip_predicted_values: True
-  entropy_loss_scale: 0.0001
+  entropy_loss_scale: 0.0005
   value_loss_scale: 1.0
   kl_threshold: 0.0
   rewards_shaper_scale: 1.0
@@ -77,5 +77,5 @@ agent:
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 100000  # Gaurav Sukhatme does 1e8 steps #^# (https://www.youtube.com/watch?v=M9oH0fn9uq0
+  timesteps: 100000
   environment_info: log

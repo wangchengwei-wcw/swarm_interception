@@ -11,7 +11,7 @@ models:
     clip_log_std: True
     min_log_std: -20.0
     max_log_std: 2.0
-    initial_log_std: -1.0
+    initial_log_std: 0.0
     network:
       - name: net
         input: STATES
@@ -40,7 +40,8 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/multi_agents/mappo.html
 agent:
   class: MAPPO
-  rollouts: 100
+  # rollouts: 100  # 10 steps/sec for waypoint envs
+  rollouts: 500  # 50 steps/sec for bodyrate envs
   learning_epochs: 5
   mini_batches: 2
   discount_factor: 0.99
@@ -61,8 +62,8 @@ agent:
   ratio_clip: 0.2
   value_clip: 0.2
   clip_predicted_values: True
-  entropy_loss_scale: 0.0001
-  value_loss_scale: 1.0
+  entropy_loss_scale: 0.0
+  value_loss_scale: 2.0
   kl_threshold: 0.0
   rewards_shaper_scale: 1.0
   time_limit_bootstrap: False
