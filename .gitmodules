@@ -1,3 +1,6 @@
 [submodule "reinforcement_learning/lib/skrl"]
 	path = reinforcement_learning/lib/skrl
 	url = git@github.com:dungloi/skrl.git
+[submodule "reinforcement_learning/lib/stable-baselines3"]
+	path = reinforcement_learning/lib/stable-baselines3
+	url = git@github.com:lyf-FATAS/stable-baselines3.git
