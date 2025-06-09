@@ -34,7 +34,8 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     success_reward_weight = 5.0
     time_penalty_weight = 0.0
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
-    mutual_collision_avoidance_reward_weight = 0.01
+    mutual_collision_avoidance_reward_weight = 0.0
+    # mutual_collision_avoidance_reward_weight = 0.01
     lin_vel_penalty_weight = 0.01
     ang_vel_penalty_weight = 0.0001
     ang_vel_diff_penalty_weight = 0.0001
@@ -45,23 +46,27 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     speed_deviation_tolerance = 0.5
 
     flight_altitude = 1.0  # Desired flight altitude
-    success_distance_threshold = 0.6  # Distance threshold for considering goal reached
-    safe_dist = 2.0
+    # success_distance_threshold = 2.0  # Distance threshold for considering goal reached
+    success_distance_threshold = 0.25  # Distance threshold for considering goal reached
+    safe_dist = 1.0
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    goal_range = 4.0  # Range of xy coordinates of the goal
+    goal_range = 5.0  # Range of xy coordinates of the goal
     rand_init_states = True  # Whether to randomly permute initial states among agents in the migration mission
     init_circle_radius = 5.0
 
     # TODO: Improve dirty cirriculum
     enable_dirty_cirriculum = True
+    # training_steps = 1e5
     training_steps = 2e5
-    init_mutual_collision_avoidance_reward_weight = 0.001
+    init_mutual_collision_avoidance_reward_weight = 0.0
+    # init_mutual_collision_avoidance_reward_weight = 0.001
     init_ang_vel_penalty_weight = 0.0
     init_ang_vel_diff_penalty_weight = 0.0
     init_thrust_diff_penalty_weight = 0.0
-    init_success_distance_threshold = 1.0
-    init_safe_dist = 1.0
+    # init_success_distance_threshold = 3.0
+    init_success_distance_threshold = 0.25
+    init_safe_dist = 0.5
     init_goal_range = 10.0
 
     # Env
@@ -390,13 +395,13 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         # Randomly assign missions to reset envs
         self.env_mission_ids[env_ids] = torch.randint(0, len(self.cfg.mission_names), (len(env_ids),), device=self.device)
-        self.env_mission_ids[env_ids] = 2
+        self.env_mission_ids[env_ids] = 1
         mission_0_ids = env_ids[self.env_mission_ids[env_ids] == 0]  # The migration mission
         mission_1_ids = env_ids[self.env_mission_ids[env_ids] == 1]  # The crossover mission
         mission_2_ids = env_ids[self.env_mission_ids[env_ids] == 2]  # The chaotic mission
 
         # Reset robot state
-        # Randomly permute initial root and joint states among agents
+        # Randomly permute initial root among agents
         agents = list(self.possible_agents)
         permuted = agents.copy()
         if self.cfg.rand_init_states:
@@ -408,12 +413,12 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         random.shuffle(rand_init_order)
 
         for i, agent in enumerate(self.possible_agents):
-            init_state = self.robots[agent].data.default_root_state
+            init_state = self.robots[agent].data.default_root_state.clone()
 
             # The migration mission: default init states + unified random target
             if len(mission_0_ids) > 0:
                 rand_other_agent = mapping[agent]
-                init_state[mission_0_ids] = self.robots[rand_other_agent].data.default_root_state[mission_0_ids]
+                init_state[mission_0_ids] = self.robots[rand_other_agent].data.default_root_state[mission_0_ids].clone()
 
                 if agent == "drone_0":
                     self.goals[agent][mission_0_ids, :2] = torch.zeros_like(self.goals[agent][mission_0_ids, :2]).uniform_(-self.cfg.goal_range, self.cfg.goal_range)
