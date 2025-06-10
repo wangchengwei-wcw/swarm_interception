@@ -82,14 +82,17 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     clip_action = 1.0
     possible_agents = None
     action_spaces = None
+    history_length = 5
+    transient_observasion_dim = 16 + 4 * (num_drones - 1)
     observation_spaces = None
+    transient_state_dim = 16 * num_drones
     state_space = None
 
     def __post_init__(self):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
         self.action_spaces = {agent: 4 for agent in self.possible_agents}
-        self.observation_spaces = {agent: 16 + 4 * (self.num_drones - 1) for agent in self.possible_agents}
-        self.state_space = 16 * self.num_drones
+        self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
+        self.state_space = self.history_length * self.transient_state_dim
         self.v_desired = {agent: 2.0 for agent in self.possible_agents}
         self.v_max = {agent: 3.0 for agent in self.possible_agents}
         self.thrust_to_weight = {agent: 2.0 for agent in self.possible_agents}
@@ -167,13 +170,14 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         self.prev_dist_to_goals, self.prev_ang_vels, self.prev_thrusts = {}, {}, {}
 
-        self.relative_positions_w = {}
-        for i in range(self.cfg.num_drones):
-            self.relative_positions_w[i] = {}
-            for j in range(self.cfg.num_drones):
-                if i == j:
-                    continue
-                self.relative_positions_w[i][j] = torch.zeros(self.num_envs, 3, device=self.device)
+        self.relative_positions_w = {
+            i: {j: torch.zeros(self.num_envs, 3, device=self.device) for j in range(self.cfg.num_drones) if j != i} for i in range(self.cfg.num_drones)
+        }
+
+        self.observation_buffer = {
+            agent: torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_observasion_dim, device=self.device) for agent in self.cfg.possible_agents
+        }
+        self.state_buffer = torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_state_dim, device=self.device)
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
@@ -522,8 +526,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         self.goals[agent][reset_goal_idx] - self.robots[agent].data.root_pos_w[reset_goal_idx], dim=1
                     )
 
-        observations = {}
-
+        curr_observations = {}
         for i, agent in enumerate(self.possible_agents):
             body2goal_w = self.goals[agent] - self.robots[agent].data.root_pos_w
 
@@ -567,19 +570,47 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 ],
                 dim=-1,
             )
-            observations[agent] = obs
-        return observations
+            curr_observations[agent] = obs
+
+        for agent in self.cfg.possible_agents:
+            buf = self.observation_buffer[agent]
+            if (buf[0] == 0).all():
+                self.observation_buffer[agent] = curr_observations[agent].unsqueeze(0).repeat(self.cfg.history_length, 1, 1)
+            else:
+                buf[:-1] = buf[1:].clone()
+                buf[-1] = curr_observations[agent]
+
+        stacked_observations = {}
+        for agent in self.cfg.possible_agents:
+            buf = self.observation_buffer[agent]
+            stacked = buf.permute(1, 0, 2).reshape(self.num_envs, -1)
+            stacked_observations[agent] = stacked
+        return stacked_observations
 
     def _get_states(self):
-        state = []
+        curr_state = []
         for agent in self.possible_agents:
             body2goal_w = self.goals[agent] - self.robots[agent].data.root_pos_w
-            state.append(body2goal_w)
-            state.append(self.robots[agent].data.root_quat_w.clone())
-            state.append(self.robots[agent].data.projected_gravity_b.clone())
-            state.append(self.robots[agent].data.root_vel_w.clone())
+            curr_state.extend(
+                [
+                    body2goal_w,
+                    self.robots[agent].data.root_quat_w.clone(),
+                    self.robots[agent].data.projected_gravity_b.clone(),
+                    self.robots[agent].data.root_vel_w.clone(),
+                ]
+            )
+        curr_state = torch.cat(curr_state, dim=-1)
 
-        return torch.cat(state, dim=-1)
+        buf = self.state_buffer
+        if (buf[0] == 0).all():
+            self.state_buffer = curr_state.unsqueeze(0).repeat(self.cfg.history_length, 1, 1)
+            buf = self.state_buffer
+        else:
+            buf[:-1] = buf[1:].clone()
+            buf[-1] = curr_state
+
+        stacked_state = buf.permute(1, 0, 2).reshape(self.num_envs, -1)
+        return stacked_state
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
