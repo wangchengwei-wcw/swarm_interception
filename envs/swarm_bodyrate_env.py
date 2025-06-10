@@ -28,14 +28,13 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
     # Reward weights
-    death_penalty_weight = 1.0
+    death_penalty_weight = 0.0
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
-    success_reward_weight = 5.0
+    success_reward_weight = 10.0
     time_penalty_weight = 0.0
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
     mutual_collision_avoidance_reward_weight = 0.0
-    # mutual_collision_avoidance_reward_weight = 0.01
     lin_vel_penalty_weight = 0.01
     ang_vel_penalty_weight = 0.0001
     ang_vel_diff_penalty_weight = 0.0001
@@ -46,8 +45,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     speed_deviation_tolerance = 0.5
 
     flight_altitude = 1.0  # Desired flight altitude
-    # success_distance_threshold = 2.0  # Distance threshold for considering goal reached
-    success_distance_threshold = 0.25  # Distance threshold for considering goal reached
+    success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     safe_dist = 1.0
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
@@ -56,18 +54,15 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     init_circle_radius = 5.0
 
     # TODO: Improve dirty cirriculum
-    enable_dirty_cirriculum = True
-    # training_steps = 1e5
-    training_steps = 2e5
+    enable_dirty_cirriculum = False
+    training_steps = 1e5
     init_mutual_collision_avoidance_reward_weight = 0.0
-    # init_mutual_collision_avoidance_reward_weight = 0.001
-    init_ang_vel_penalty_weight = 0.0
-    init_ang_vel_diff_penalty_weight = 0.0
-    init_thrust_diff_penalty_weight = 0.0
-    # init_success_distance_threshold = 3.0
-    init_success_distance_threshold = 0.25
-    init_safe_dist = 0.5
-    init_goal_range = 10.0
+    init_ang_vel_penalty_weight = 0.0001
+    init_ang_vel_diff_penalty_weight = 0.0001
+    init_thrust_diff_penalty_weight = 0.0001
+    init_success_distance_threshold = 0.5
+    init_safe_dist = 1.0
+    init_goal_range = 5.0
 
     # Env
     episode_length_s = 30.0
@@ -174,6 +169,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             i: {j: torch.zeros(self.num_envs, 3, device=self.device) for j in range(self.cfg.num_drones) if j != i} for i in range(self.cfg.num_drones)
         }
 
+        self.reset_buffer = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self.observation_buffer = {
             agent: torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_observasion_dim, device=self.device) for agent in self.cfg.possible_agents
         }
@@ -213,6 +209,9 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
+        # TODO: Where would it make more sense to fill reset_buffer with False?
+        self.reset_buffer[:] = False
+
         for agent in self.possible_agents:
             self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
             self.thrusts[agent][:, 0, 2] = self.cfg.thrust_to_weight[agent] * self.robot_weights[agent] * (self.actions[agent][:, 0] + 1.0) / 2.0
@@ -386,6 +385,8 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self.robots["drone_0"]._ALL_INDICES
 
+        self.reset_buffer[env_ids] = True
+
         # FIXME: Logging
         self.extras = {}
 
@@ -399,7 +400,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         # Randomly assign missions to reset envs
         self.env_mission_ids[env_ids] = torch.randint(0, len(self.cfg.mission_names), (len(env_ids),), device=self.device)
-        self.env_mission_ids[env_ids] = 1
+        self.env_mission_ids[env_ids] = 2
         mission_0_ids = env_ids[self.env_mission_ids[env_ids] == 0]  # The migration mission
         mission_1_ids = env_ids[self.env_mission_ids[env_ids] == 1]  # The crossover mission
         mission_2_ids = env_ids[self.env_mission_ids[env_ids] == 2]  # The chaotic mission
@@ -572,19 +573,22 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             )
             curr_observations[agent] = obs
 
+        # Scroll or reset (fill in the first frame) the observation buffer
         for agent in self.cfg.possible_agents:
             buf = self.observation_buffer[agent]
-            if (buf[0] == 0).all():
-                self.observation_buffer[agent] = curr_observations[agent].unsqueeze(0).repeat(self.cfg.history_length, 1, 1)
-            else:
-                buf[:-1] = buf[1:].clone()
-                buf[-1] = curr_observations[agent]
+            if self.reset_buffer.any():
+                curr_observation = curr_observations[agent].unsqueeze(0)
+                buf[:, self.reset_buffer] = curr_observation[:, self.reset_buffer].repeat(self.cfg.history_length, 1, 1)
+
+            scroll_buffer = ~self.reset_buffer
+            if scroll_buffer.any():
+                buf[:-1, scroll_buffer] = buf[1:, scroll_buffer].clone()
+                buf[-1, scroll_buffer] = curr_observations[agent][scroll_buffer]
 
         stacked_observations = {}
         for agent in self.cfg.possible_agents:
             buf = self.observation_buffer[agent]
-            stacked = buf.permute(1, 0, 2).reshape(self.num_envs, -1)
-            stacked_observations[agent] = stacked
+            stacked_observations[agent] = buf.permute(1, 0, 2).reshape(self.num_envs, -1)
         return stacked_observations
 
     def _get_states(self):
@@ -601,13 +605,16 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             )
         curr_state = torch.cat(curr_state, dim=-1)
 
+        # Scroll or reset (fill in the first frame) the state buffer
         buf = self.state_buffer
-        if (buf[0] == 0).all():
-            self.state_buffer = curr_state.unsqueeze(0).repeat(self.cfg.history_length, 1, 1)
-            buf = self.state_buffer
-        else:
-            buf[:-1] = buf[1:].clone()
-            buf[-1] = curr_state
+        if self.reset_buffer.any():
+            curr_state_ = curr_state.unsqueeze(0)
+            buf[:, self.reset_buffer] = curr_state_[:, self.reset_buffer].repeat(self.cfg.history_length, 1, 1)
+
+        scroll_buffer = ~self.reset_buffer
+        if scroll_buffer.any():
+            buf[:-1, scroll_buffer] = buf[1:, scroll_buffer].clone()
+            buf[-1, scroll_buffer] = curr_state[scroll_buffer]
 
         stacked_state = buf.permute(1, 0, 2).reshape(self.num_envs, -1)
         return stacked_state
