@@ -29,14 +29,14 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     viewer = ViewerCfg(eye=(3.0, -3.0, 40.0))
 
     # Reward weights
-    death_penalty_weight = 50.0
+    death_penalty_weight = 10.0
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
     altitude_maintenance_reward_weight = 0.0  # Reward for maintaining height close to flight_altitude
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
-    mutual_collision_avoidance_reward_weight = 30.0
+    mutual_collision_avoidance_reward_weight = 1.0
     lin_vel_penalty_weight = 0.001
     ang_vel_penalty_weight = 0.0001
     ang_vel_diff_penalty_weight = 0.0001
@@ -59,9 +59,9 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
 
     # TODO: Improve dirty curriculum
     enable_dirty_curriculum = True
-    curriculum_steps = 2e5
-    init_death_penalty_weight = 50.0
-    init_mutual_collision_avoidance_reward_weight = 20.0
+    curriculum_steps = 1e5
+    init_death_penalty_weight = 0.1
+    init_mutual_collision_avoidance_reward_weight = 0.01
     init_ang_vel_penalty_weight = 0.0001
     init_ang_vel_diff_penalty_weight = 0.0001
     init_thrust_diff_penalty_weight = 0.0001
@@ -74,16 +74,16 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     action_freq = 50.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 4  # Number of drones per environment
+    num_drones = 3  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
     possible_agents = None
     action_spaces = None
     history_length = 5
-    transient_observasion_dim = 20 + 4 * (num_drones - 1)
+    transient_observasion_dim = 17 + 4 * (num_drones - 1)
     observation_spaces = None
-    transient_state_dim = 19 * num_drones
+    transient_state_dim = 16 * num_drones
     state_space = None
 
     def __post_init__(self):
@@ -247,7 +247,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
-            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.5, self.robots[agent].data.root_link_pos_w[:, 2] > 1.5)
+            z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.9, self.robots[agent].data.root_link_pos_w[:, 2] > 1.1)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
             _died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
@@ -318,13 +318,16 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         death_reward = -torch.where(self.terminated_dict["drone_0"], torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
 
-        mutual_collision_avoidance_reward = torch.zeros(self.num_envs, device=self.device)
-        for i in range(self.cfg.num_drones):
-            for j in range(i + 1, self.cfg.num_drones):
+        mutual_collision_avoidance_reward = {agent: torch.zeros(self.num_envs, device=self.device) for agent in self.possible_agents}
+        for i, agent in enumerate(self.possible_agents):
+            for j, _ in enumerate(self.possible_agents):
+                if i == j:
+                    continue
+
                 dist_btw_drones = torch.linalg.norm(self.relative_positions_w[i][j], dim=1)
 
                 collision_penalty = 1.0 / (1.0 + torch.exp(77 * (dist_btw_drones - self.cfg.safe_dist)))
-                mutual_collision_avoidance_reward -= collision_penalty
+                mutual_collision_avoidance_reward[agent] -= collision_penalty
 
         for agent in self.possible_agents:
             dist_to_goal = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
@@ -362,11 +365,14 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 "approaching_goal": approaching_goal_reward * self.cfg.approaching_goal_reward_weight * self.step_dt,
                 "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
                 "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
-                "death_penalty": death_reward / self.cfg.num_drones * self.cfg.death_penalty_weight,
+                "death_penalty": death_reward * self.cfg.death_penalty_weight,
                 "time_penalty": time_reward * self.cfg.time_penalty_weight * self.step_dt,
                 "altitude_maintenance": altitude_maintenance_reward * self.cfg.altitude_maintenance_reward_weight * self.step_dt,
                 "speed_maintenance": speed_maintenance_reward * self.cfg.speed_maintenance_reward_weight * self.step_dt,
-                "mutual_collision_avoidance": mutual_collision_avoidance_reward / self.cfg.num_drones * self.cfg.mutual_collision_avoidance_reward_weight * self.step_dt,
+                "mutual_collision_avoidance": mutual_collision_avoidance_reward[agent]
+                / self.cfg.num_drones
+                * self.cfg.mutual_collision_avoidance_reward_weight
+                * self.step_dt,
                 ### ============= Smoothing ============= ###
                 "ang_vel_penalty": ang_vel_reward * self.cfg.ang_vel_penalty_weight * self.step_dt,
                 "lin_vel_penalty": lin_vel_reward * self.cfg.lin_vel_penalty_weight * self.step_dt,
@@ -437,7 +443,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     self.ang[idx] = last_rand_ang
 
         if len(mission_2_ids) > 0:
-            rg_min, rg_max = self.cfg.chaotic_goal_range, 2 * self.cfg.chaotic_goal_range
+            rg_min, rg_max = self.cfg.chaotic_goal_range, 1.5 * self.cfg.chaotic_goal_range
             self.rand_rg[mission_2_ids] = torch.rand(len(mission_2_ids), device=self.device) * (rg_max - rg_min) + rg_min
             init_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
             goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
@@ -587,7 +593,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
                 # FIXME: Whether ⬇️ should exist?
                 # self.prev_dist_to_goals[agent][reset_goal_idx] = torch.linalg.norm(
-                    # self.goals[agent][reset_goal_idx] - self.robots[agent].data.root_pos_w[reset_goal_idx], dim=1
+                #     self.goals[agent][reset_goal_idx] - self.robots[agent].data.root_pos_w[reset_goal_idx], dim=1
                 # )
 
         self.reset_goal_timer[reset_goal_idx] = 0.0
@@ -632,7 +638,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     self.prev_w_desired_normalized[agent].clone(),
                     body2goal_w,
                     self.robots[agent].data.root_quat_w.clone(),
-                    self.robots[agent].data.projected_gravity_b.clone(),
                     self.robots[agent].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
                     relative_positions_with_observability,
                 ],
@@ -673,7 +678,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     self.robots[agent].data.root_pos_w - self.terrain.env_origins,
                     body2goal_w,
                     self.robots[agent].data.root_quat_w.clone(),
-                    self.robots[agent].data.projected_gravity_b.clone(),
                     self.robots[agent].data.root_vel_w.clone(),
                 ]
             )
