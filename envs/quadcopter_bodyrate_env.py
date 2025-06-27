@@ -113,7 +113,7 @@ class QuadcopterBodyrateEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
-            raise ValueError("Replan and control decimation must be greater than or equal to 1 #^#")
+            raise ValueError("Action and control decimation must be greater than or equal to 1 #^#")
 
         # Goal position
         self.goal = torch.zeros(self.num_envs, 3, device=self.device)

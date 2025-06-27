@@ -4,7 +4,7 @@ seed: 42
 # Models are instantiated using skrl's model instantiator utility
 # https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
 models:
-  separate: False
+  separate: True
   policy:  # see gaussian_model parameters
     class: GaussianMixin
     clip_actions: False
@@ -42,15 +42,17 @@ agent:
   class: IPPO
   shared_parameters: True
   # rollouts: 100  # 10 steps/sec for waypoint envs
-  rollouts: 200  # 50 steps/sec for bodyrate envs
-  learning_epochs: 4
-  mini_batches: 2
+  rollouts: 150  # 50 steps/sec for bodyrate envs
+  learning_epochs: 3
+  mini_batches: 4
   discount_factor: 0.99
   lambda: 0.95
   learning_rate: 1.0e-04
+  # learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler: null
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.016
+    max_lr: 0.0005
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler
