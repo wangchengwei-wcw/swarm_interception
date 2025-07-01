@@ -95,7 +95,7 @@ from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoi
 
 # Config shortcuts
 algorithm = args_cli.algorithm.lower()
-agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
+agent_cfg_entry_point = "skrl_ppo_cfg_entry_point" if algorithm in ["ppo"] else f"skrl_{algorithm}_cfg_entry_point"
 
 
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
@@ -182,7 +182,6 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
         runner.agent.load(resume_path)
 
         # FIXME: Improve to be more rational
-        # [xdl]: the log_std_parameter retrieved from the checkpoint is not None, set it to the initial value for single and multi agent
         if args_cli.init_log_std is not None:
             # Recursive filling
             def fill_log_std(obj):

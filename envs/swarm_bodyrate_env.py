@@ -7,6 +7,11 @@ import torch
 from collections.abc import Sequence
 from loguru import logger
 
+from rclpy.node import Node
+from builtin_interfaces.msg import Time
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import TwistStamped, Vector3Stamped
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, ViewerCfg
@@ -29,7 +34,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 1.0
+    death_penalty_weight = 0.5
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
@@ -37,7 +42,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     altitude_maintenance_reward_weight = 0.0  # Reward for maintaining height close to flight_altitude
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
     mutual_collision_avoidance_reward_weight = 0.1
-    lin_vel_penalty_weight = 0.01
+    lin_vel_penalty_weight = 0.04
     ang_vel_penalty_weight = 0.0
     ang_vel_diff_penalty_weight = 0.0
     thrust_diff_penalty_weight = 0.0
@@ -78,6 +83,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     action_spaces = None
     history_length = 5
     transient_observasion_dim = 20 + 7 * (num_drones - 1)
+    # transient_observasion_dim = 20
     observation_spaces = None
     transient_state_dim = 16 * num_drones
     state_space = None
@@ -200,6 +206,12 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.set_debug_vis(self.cfg.debug_vis)
         self.visualize_new_cmd = False
 
+        # ROS2
+        self.node = Node("swarm_bodyrate_env", namespace="swarm_bodyrate_env")
+        self.odom_pub = self.node.create_publisher(Odometry, "odom", 10)
+        self.action_pub = self.node.create_publisher(TwistStamped, "action", 10)
+        self.m_desired_pub = self.node.create_publisher(Vector3Stamped, "m_desired", 10)
+
     def _setup_scene(self):
         self.robots = {}
         points_per_side = math.ceil(math.sqrt(self.cfg.num_drones))
@@ -247,6 +259,9 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 self.m_desired[agent][:, 0, :] = bodyrate_control_without_thrust(
                     self.robots[agent].data.root_ang_vel_w, self.w_desired[agent], self.robot_inertias[agent], self.kPw[agent]
                 )
+
+            self._publish_debug_signals()
+
             self.control_counter = 0
         self.control_counter += 1
 
@@ -827,6 +842,68 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         frac = float(p + 1) / (self.num_vis_point + 1)
                         self.rel_pos_visualizers[j][p].visualize(translations=orig[mask] + rel_pos[mask] * frac)
 
+    def _publish_debug_signals(self):
+
+        t = self._get_ros_timestamp()
+        agent = "drone_0"
+        env_id = 0
+
+        # Publish states
+        state = self.robots[agent].data.root_state_w[env_id]
+        p_odom = state[:3].cpu().numpy()
+        q_odom = state[3:7].cpu().numpy()
+        v_odom = state[7:10].cpu().numpy()
+        w_odom = state[10:13].cpu().numpy()
+
+        odom_msg = Odometry()
+        odom_msg.header.stamp = t
+        odom_msg.header.frame_id = "world"
+        odom_msg.child_frame_id = "base_link"
+        odom_msg.pose.pose.position.x = float(p_odom[0])
+        odom_msg.pose.pose.position.y = float(p_odom[1])
+        odom_msg.pose.pose.position.z = float(p_odom[2])
+        odom_msg.pose.pose.orientation.w = float(q_odom[0])
+        odom_msg.pose.pose.orientation.x = float(q_odom[1])
+        odom_msg.pose.pose.orientation.y = float(q_odom[2])
+        odom_msg.pose.pose.orientation.z = float(q_odom[3])
+        odom_msg.twist.twist.linear.x = float(v_odom[0])
+        odom_msg.twist.twist.linear.y = float(v_odom[1])
+        odom_msg.twist.twist.linear.z = float(v_odom[2])
+        odom_msg.twist.twist.angular.x = float(w_odom[0])
+        odom_msg.twist.twist.angular.y = float(w_odom[1])
+        odom_msg.twist.twist.angular.z = float(w_odom[2])
+        self.odom_pub.publish(odom_msg)
+
+        # Publish actions
+        thrust_desired = self.thrusts_desired[agent][env_id, 0, 2].cpu().numpy()
+        w_desired = self.w_desired[agent][env_id].cpu().numpy()
+        m_desired = self.m_desired[agent][env_id, 0, :].cpu().numpy()
+
+        action_msg = TwistStamped()
+        action_msg.header.stamp = t
+        action_msg.header.frame_id = "world"
+        action_msg.twist.linear.x = float(thrust_desired)
+        action_msg.twist.angular.x = float(w_desired[0])
+        action_msg.twist.angular.y = float(w_desired[1])
+        action_msg.twist.angular.z = float(w_desired[2])
+        self.action_pub.publish(action_msg)
+
+        m_desired_msg = Vector3Stamped()
+        m_desired_msg.header.stamp = t
+        m_desired_msg.vector.x = float(m_desired[0])
+        m_desired_msg.vector.y = float(m_desired[1])
+        m_desired_msg.vector.z = float(m_desired[2])
+        self.m_desired_pub.publish(m_desired_msg)
+
+    def _get_ros_timestamp(self) -> Time:
+        sim_time = self._sim_step_counter * self.physics_dt
+
+        stamp = Time()
+        stamp.sec = int(sim_time)
+        stamp.nanosec = int((sim_time - stamp.sec) * 1e9)
+
+        return stamp
+
 
 from config import agents
 
@@ -838,6 +915,7 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": SwarmBodyrateEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:swarm_sb3_ppo_cfg.yaml",
+        "skrl_ppo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ppo_cfg.yaml",
         "skrl_ippo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ippo_cfg.yaml",
         "skrl_mappo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_mappo_cfg.yaml",
     },

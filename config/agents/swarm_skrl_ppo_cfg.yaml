@@ -36,13 +36,12 @@ memory:
   memory_size: -1  # automatically determined (same as agent:rollouts)
 
 
-# IPPO agent configuration (field names are from IPPO_DEFAULT_CONFIG)
-# https://skrl.readthedocs.io/en/latest/api/multi_agents/ippo.html
+# PPO agent configuration (field names are from PPO_DEFAULT_CONFIG)
+# https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
-  class: IPPO
-  shared_parameters: True
+  class: PPO
   # rollouts: 100  # 10 steps/sec for waypoint envs
-  rollouts: 200  # 50 steps/sec for bodyrate envs
+  rollouts: 250  # 50 steps/sec for bodyrate envs
   learning_epochs: 3
   mini_batches: 4
   discount_factor: 0.99
