@@ -30,19 +30,22 @@ from utils.controller import bodyrate_control_without_thrust
 @configclass
 class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(3.0, -3.0, 40.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 60.0))
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
     death_penalty_weight = 1.0
     approaching_goal_reward_weight = 2.0
+    death_penalty_weight = 1.0
+    approaching_goal_reward_weight = 20.0
+    angle_to_goal_penalty_weight = 0.0
     dist_to_goal_reward_weight = 0.0
-    success_reward_weight = 10.0
+    success_reward_weight = 50.0
     time_penalty_weight = 0.0
     altitude_maintenance_reward_weight = 0.0  # Reward for maintaining height close to flight_altitude
     speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
-    mutual_collision_avoidance_reward_weight = 0.1
-    max_lin_vel_penalty_weight = 10.0
+    mutual_collision_avoidance_reward_weight = 1.0
+    max_lin_vel_penalty_weight = 0.1
     ang_vel_penalty_weight = 0.0
     ang_vel_diff_penalty_weight = 0.0
     thrust_diff_penalty_weight = 0.0
@@ -55,7 +58,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     flight_altitude = 1.0  # Desired flight altitude
     safe_dist = 1.0
     collide_dist = 0.6
-    goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
+    goal_reset_delay = 3.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
@@ -66,7 +69,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     # TODO: Improve dirty curriculum
     enable_dirty_curriculum = True
     curriculum_steps = 2e5
-    init_death_penalty_weight = 0.1
+    init_death_penalty_weight = 0.01
     init_mutual_collision_avoidance_reward_weight = 0.01
 
     # Env
@@ -89,18 +92,22 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     transient_state_dim = 16 * num_drones
     state_space = None
 
+    enable_domain_randomization = False
+    enable_informed_reset = True
+    informed_reset_prob = 0.9
+    min_informed_steps = 20
+    max_informed_steps = 80
+    max_failure_buffer_size = 1000
+
     def __post_init__(self):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
         self.action_spaces = {agent: 4 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.state_space = self.history_length * self.transient_state_dim
         self.v_desired = {agent: 2.0 for agent in self.possible_agents}
-        self.v_max = {agent: 2.0 for agent in self.possible_agents}
+        self.v_max = {agent: 3.0 for agent in self.possible_agents}
         self.thrust_to_weight = {agent: 2.0 for agent in self.possible_agents}
         self.w_max = {agent: 4.0 for agent in self.possible_agents}
-
-    # [xdl]: domain randomization settings
-    enable_domain_randomization = False
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -151,6 +158,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
             raise ValueError("Action and control decimation must be greater than or equal to 1 #^#")
 
+        self.init_pos = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.goals = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.env_mission_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.reset_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -199,6 +207,9 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             agent: torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_observasion_dim, device=self.device) for agent in self.cfg.possible_agents
         }
         self.state_buffer = torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_state_dim, device=self.device)
+
+        self.history_state_buffer = []
+        self.failure_buffer = []
 
         # Logging
         self.episode_sums = {}
@@ -261,7 +272,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     self.robots[agent].data.root_ang_vel_w, self.w_desired[agent], self.robot_inertias[agent], self.kPw[agent]
                 )
 
-            self._publish_debug_signals()
+            # self._publish_debug_signals()
 
             self.control_counter = 0
         self.control_counter += 1
@@ -271,8 +282,8 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        collision_died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for agent in self.possible_agents:
-
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.9, self.robots[agent].data.root_link_pos_w[:, 2] > 1.1)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
             _died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
@@ -296,7 +307,15 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     continue
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
-                died = torch.logical_or(died, torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist)
+                collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
+                collision_died = torch.logical_or(collision_died, collision)
+                died = torch.logical_or(died, collision)
+
+        # if self.informed is not None and self.informed:
+        #     print(died[self.informed_ids])
+        #     print("------------------------------------")
+        #     print(collision_died[self.informed_ids])
+        #     self.informed = False
 
         # TODO: Test
         # success = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
@@ -307,6 +326,37 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         # died = torch.logical_or(died, success)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
+
+        all_states = []
+        for agent in self.possible_agents:
+            state = self.robots[agent].data.root_state_w.clone()
+            state[:, :3] -= self.terrain.env_origins
+            goal = self.goals[agent].clone()
+            goal[:, :3] -= self.terrain.env_origins
+            xy_boundary = self.xy_boundary.clone().unsqueeze(-1)
+            state_with_goal = torch.cat([state, goal, xy_boundary], dim=-1)  # [num_envs, 17]
+            all_states.append(state_with_goal)
+        all_states_tensor = torch.stack(all_states, dim=1)  # [num_envs, num_agents, 17]
+        self.history_state_buffer.append(all_states_tensor)
+        if len(self.history_state_buffer) > self.cfg.max_informed_steps:
+            self.history_state_buffer.pop(0)
+
+        history_state_tensor = torch.stack(self.history_state_buffer, dim=0)  # [num_frames, num_envs, num_agents, state_size]
+
+        mask = collision_died  # [num_envs] bool indicating which environments collided
+        if mask.any() and len(self.history_state_buffer) >= self.cfg.max_informed_steps:
+            collided_envs = torch.nonzero(mask, as_tuple=True)[0]
+            frame_indices = torch.randint(0, len(self.history_state_buffer) - self.cfg.min_informed_steps, size=(collided_envs.shape[0],))
+            failure_states = history_state_tensor[frame_indices, collided_envs]
+
+            non_empty_failure_states = failure_states[~torch.all(failure_states == 0, dim=(1, 2))]
+            if non_empty_failure_states.shape[0] > 0:
+                self.failure_buffer.extend(non_empty_failure_states)
+                while len(self.failure_buffer) > self.cfg.max_failure_buffer_size:
+                    self.failure_buffer.pop(0)
+
+        history_state_tensor[:, torch.nonzero(died, as_tuple=True)[0]] = 0.0
+        self.history_state_buffer = [history_state_tensor[i] for i in range(history_state_tensor.shape[0])]
 
         return {agent: died for agent in self.cfg.possible_agents}, {agent: time_out for agent in self.cfg.possible_agents}
 
@@ -352,6 +402,18 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
             dist_to_goal_reward = torch.exp(-self.cfg.dist_to_goal_scale * dist_to_goal)
 
+            # Angle to goal penalty for maintaining the direction towards the goal
+            curr_pos_xy = self.robots[agent].data.root_pos_w[:, :2]
+            goal_pos_xy = self.goals[agent][:, :2]
+            init_pos_xy = self.init_pos[agent][:, :2]
+
+            curr2goal_xy = goal_pos_xy - curr_pos_xy
+            init2goal_xy = goal_pos_xy - init_pos_xy
+            curr2goal_xy_norm = curr2goal_xy / (curr2goal_xy.norm(dim=1, keepdim=True) + 1e-8)
+            init2goal_xy_norm = init2goal_xy / (init2goal_xy.norm(dim=1, keepdim=True) + 1e-8)
+            cos_theta = (curr2goal_xy_norm * init2goal_xy_norm).sum(dim=1).clamp(-1.0, 1.0)
+            angle_reward = cos_theta - 1.0
+
             success_i = dist_to_goal < self.success_dist_thr
             # Additional reward when the drone is close to goal
             success_reward = torch.where(success_i, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
@@ -383,6 +445,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             reward = {
                 "meaning_to_live": torch.ones(self.num_envs, device=self.device) * self.cfg.to_live_reward_weight * self.step_dt,
                 "approaching_goal": approaching_goal_reward * self.cfg.approaching_goal_reward_weight * self.step_dt,
+                "angle_to_goal_penalty": angle_reward * self.cfg.angle_to_goal_penalty_weight * self.step_dt,
                 "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
                 "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
                 "death_penalty": death_reward * self.cfg.death_penalty_weight,
@@ -438,7 +501,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
         # Randomly assign missions to reset envs
         self.env_mission_ids[env_ids] = torch.randint(0, len(self.cfg.mission_names), (len(env_ids),), device=self.device)
-        self.env_mission_ids[env_ids] = 1
+        self.env_mission_ids[env_ids] = 2
         mission_0_ids = env_ids[self.env_mission_ids[env_ids] == 0]  # The migration mission
         mission_1_ids = env_ids[self.env_mission_ids[env_ids] == 1]  # The crossover mission
         mission_2_ids = env_ids[self.env_mission_ids[env_ids] == 2]  # The chaotic mission
@@ -514,6 +577,14 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     logger.warning(f"The search for goal positions of the swarm meeting constraints within a side-length {rg} box failed, using the final sample #_#")
                     goal_p[idx] = last_rand_pts
 
+        self.informed = self.cfg.enable_informed_reset and random.random() < self.cfg.informed_reset_prob and len(self.failure_buffer) > 0
+        if self.informed:
+            # Informed reset: set initial state and goal based on a randomly chosen state from the failure buffer
+            informed_states = torch.stack([random.choice(self.failure_buffer) for _ in env_ids])
+            self.informed_ids = env_ids
+        else:
+            informed_states = None
+
         for i, agent in enumerate(self.possible_agents):
             init_state = self.robots[agent].data.default_root_state.clone()
 
@@ -547,11 +618,19 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             self.goals[agent][env_ids, 2] = float(self.cfg.flight_altitude)
             self.goals[agent][env_ids] += self.terrain.env_origins[env_ids]
 
+            if informed_states is not None:
+                init_state[env_ids, :13] = (informed_states[:, i, :13]).clone()
+                init_state[env_ids, :3] = informed_states[:, i, :3] + self.terrain.env_origins[env_ids]
+                self.goals[agent][env_ids] = informed_states[:, i, 13:16] + self.terrain.env_origins[env_ids]
+                self.xy_boundary[env_ids] = (informed_states[:, i, 16]).clone()
+
             self.robots[agent].write_root_pose_to_sim(init_state[env_ids, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(init_state[env_ids, 7:], env_ids)
             self.robots[agent].write_joint_state_to_sim(
                 self.robots[agent].data.default_joint_pos[env_ids], self.robots[agent].data.default_joint_vel[env_ids], None, env_ids
             )
+
+            self.init_pos[agent][env_ids] = init_state[env_ids, :3].clone()
 
             if agent in self.prev_dist_to_goals:
                 self.prev_dist_to_goals[agent][env_ids] = torch.linalg.norm(self.goals[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
