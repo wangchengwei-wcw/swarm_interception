@@ -3,6 +3,7 @@ from __future__ import annotations
 import gymnasium as gym
 import math
 import random
+import time
 import torch
 from collections.abc import Sequence
 from loguru import logger
@@ -24,36 +25,35 @@ from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
 
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils.utils import quat_to_ang_between_z_body_and_z_world
-from utils.controller import bodyrate_control_without_thrust
+from utils.controller import Controller
 
 
 @configclass
-class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
+class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
     viewer = ViewerCfg(eye=(3.0, -3.0, 40.0))
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 1.0
-    approaching_goal_reward_weight = 2.0
-    dist_to_goal_reward_weight = 0.0
-    success_reward_weight = 10.0
+    death_penalty_weight = 0.6
+    approaching_goal_reward_weight = 1.0
+    dist_to_goal_reward_weight = 0.5
+    success_reward_weight = 1.0
     time_penalty_weight = 0.0
     altitude_maintenance_reward_weight = 0.0  # Reward for maintaining height close to flight_altitude
-    speed_maintenance_reward_weight = 0.0  # Reward for maintaining speed close to v_desired
-    mutual_collision_avoidance_reward_weight = 0.1
-    max_lin_vel_penalty_weight = 10.0
+    mutual_collision_avoidance_reward_weight = 1.0
+    max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
-    ang_vel_diff_penalty_weight = 0.0
-    thrust_diff_penalty_weight = 0.0
+    action_diff_penalty_weight = 0.0
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
     speed_deviation_tolerance = 0.5
+    mutual_collision_avoidance_reward_scale = 0.5  # Correspond to safe_dist of 3.0
     max_lin_vel_penalty_scale = 2.0
 
     flight_altitude = 1.0  # Desired flight altitude
-    safe_dist = 1.0
+    safe_dist = 3.0
     collide_dist = 0.6
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
@@ -66,8 +66,8 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     # TODO: Improve dirty curriculum
     enable_dirty_curriculum = True
     curriculum_steps = 2e5
-    init_death_penalty_weight = 0.1
-    init_mutual_collision_avoidance_reward_weight = 0.01
+    init_death_penalty_weight = 0.13
+    init_mutual_collision_avoidance_reward_weight = 0.13
 
     # Env
     episode_length_s = 30.0
@@ -83,21 +83,18 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     possible_agents = None
     action_spaces = None
     history_length = 5
-    transient_observasion_dim = 20 + 4 * (num_drones - 1)
-    # transient_observasion_dim = 20
+    transient_observasion_dim = 8 + 4 * (num_drones - 1)
+    # transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 16 * num_drones
     state_space = None
 
     def __post_init__(self):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
-        self.action_spaces = {agent: 4 for agent in self.possible_agents}
+        self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.state_space = self.history_length * self.transient_state_dim
-        self.v_desired = {agent: 2.0 for agent in self.possible_agents}
         self.v_max = {agent: 2.0 for agent in self.possible_agents}
-        self.thrust_to_weight = {agent: 2.0 for agent in self.possible_agents}
-        self.w_max = {agent: 4.0 for agent in self.possible_agents}
 
     # [xdl]: domain randomization settings
     enable_domain_randomization = False
@@ -138,14 +135,15 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     # Debug visualization
     debug_vis = True
     debug_vis_goal = True
-    debug_vis_safe_dist = True
+    debug_vis_action = True
+    debug_vis_collide_dist = True
     debug_vis_rel_pos = True
 
 
-class SwarmBodyrateEnv(DirectMARLEnv):
-    cfg: SwarmBodyrateEnvCfg
+class SwarmVelEnv(DirectMARLEnv):
+    cfg: SwarmVelEnvCfg
 
-    def __init__(self, cfg: SwarmBodyrateEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: SwarmVelEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
@@ -158,7 +156,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.xy_boundary = 23.0 * torch.ones(self.num_envs, device=self.device)  # AJ was the limit
 
         # Mission migration params
-        self.r = 1.314 * self.cfg.safe_dist / 2.0 / math.sin(math.pi / self.cfg.num_drones)
+        self.r = (2.3 * self.cfg.collide_dist) / 2.0 / math.sin(math.pi / self.cfg.num_drones)
         self.rand_goal_order = list(range(len(self.possible_agents)))
         # Mission crossover params
         self.rand_r = torch.zeros(self.num_envs, device=self.device)
@@ -175,17 +173,23 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.robot_weights = {agent: (self.robot_masses[agent] * self.gravity.norm()).item() for agent in self.cfg.possible_agents}
 
         # Controller
-        self.actions = {}
-        self.thrusts_desired_normalized, self.w_desired_normalized = {}, {}  # Componenets of actions
-        self.prev_thrusts_desired_normalized, self.prev_w_desired_normalized = {}, {}  # Previous actions
+        self.a_desired_total, self.thrust_desired, self._thrust_desired, self.q_desired, self.w_desired, self.m_desired = {}, {}, {}, {}, {}, {}
+        self.controllers = {
+            agent: Controller(
+                1 / self.cfg.control_freq, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device), self.num_envs
+            )
+            for agent in self.cfg.possible_agents
+        }
+        self.control_counter = 0
+        self.v_polar_coord_desired_normalized, self.prev_v_polar_coord_desired_normalized = {}, {}
 
         # Denormalized actions
-        self.thrusts_desired = {agent: torch.zeros(self.num_envs, 1, 3, device=self.device) for agent in self.cfg.possible_agents}
-        self.w_desired = {}
-        self.m_desired = {agent: torch.zeros(self.num_envs, 1, 3, device=self.device) for agent in self.cfg.possible_agents}
-
-        self.kPw = {agent: torch.tensor([0.05, 0.05, 0.05], device=self.device) for agent in self.cfg.possible_agents}
-        self.control_counter = 0
+        self.p_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self.v_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self.a_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self.j_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self.yaw_desired = {agent: torch.zeros(self.num_envs, 1, device=self.device) for agent in self.cfg.possible_agents}
+        self.yaw_dot_desired = {agent: torch.zeros(self.num_envs, 1, device=self.device) for agent in self.cfg.possible_agents}
 
         self.prev_dist_to_goals = {}
 
@@ -206,12 +210,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
         self.visualize_new_cmd = False
-
-        # ROS2
-        self.node = Node("swarm_bodyrate_env", namespace="swarm_bodyrate_env")
-        self.odom_pub = self.node.create_publisher(Odometry, "odom", 10)
-        self.action_pub = self.node.create_publisher(TwistStamped, "action", 10)
-        self.m_desired_pub = self.node.create_publisher(Vector3Stamped, "m_desired", 10)
 
     def _setup_scene(self):
         self.robots = {}
@@ -247,27 +245,42 @@ class SwarmBodyrateEnv(DirectMARLEnv):
         self.reset_env_ids[:] = False
 
         for agent in self.possible_agents:
-            self.actions[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
-            self.thrusts_desired_normalized[agent] = (self.actions[agent][:, 0] + 1.0) / 2
-            self.w_desired_normalized[agent] = self.actions[agent][:, 1:]
-
-            self.thrusts_desired[agent][:, 0, 2] = self.cfg.thrust_to_weight[agent] * self.robot_weights[agent] * self.thrusts_desired_normalized[agent]
-            self.w_desired[agent] = self.cfg.w_max[agent] * self.w_desired_normalized[agent]
+            self.v_polar_coord_desired_normalized[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+            speed = self.v_polar_coord_desired_normalized[agent][:, 0] * self.cfg.v_max[agent]
+            direction = self.v_polar_coord_desired_normalized[agent][:, 1] * math.pi
+            self.v_desired[agent][:, :2] = torch.stack([speed * torch.cos(direction), speed * torch.sin(direction)], dim=1)
+            self.p_desired[agent][:, :2] = self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.step_dt
 
     def _apply_action(self) -> None:
         if self.control_counter % self.cfg.control_decimation == 0:
+            start = time.perf_counter()
             for agent in self.possible_agents:
-                self.m_desired[agent][:, 0, :] = bodyrate_control_without_thrust(
-                    self.robots[agent].data.root_ang_vel_w, self.w_desired[agent], self.robot_inertias[agent], self.kPw[agent]
+                state_desired = torch.cat(
+                    (
+                        self.p_desired[agent],
+                        self.v_desired[agent],
+                        self.a_desired[agent],
+                        self.j_desired[agent],
+                        self.yaw_desired[agent],
+                        self.yaw_dot_desired[agent],
+                    ),
+                    dim=1,
                 )
 
-            self._publish_debug_signals()
+                self.a_desired_total[agent], self.thrust_desired[agent], self.q_desired[agent], self.w_desired[agent], self.m_desired[agent] = self.controllers[
+                    agent
+                ].get_control(self.robots[agent].data.root_state_w, state_desired)
+
+                self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
+
+            end = time.perf_counter()
+            logger.debug(f"get_control for all drones takes {end - start:.5f}s")
 
             self.control_counter = 0
         self.control_counter += 1
 
         for agent in self.possible_agents:
-            self.robots[agent].set_external_force_and_torque(self.thrusts_desired[agent], self.m_desired[agent], body_ids=self.body_ids[agent])
+            self.robots[agent].set_external_force_and_torque(self._thrust_desired[agent].unsqueeze(1), self.m_desired[agent].unsqueeze(1), body_ids=self.body_ids[agent])
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -342,7 +355,11 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
                 dist_btw_drones = torch.linalg.norm(self.relative_positions_w[i][j], dim=1)
 
-                collision_penalty = 1.0 / (1.0 + torch.exp(52.0 * (dist_btw_drones - self.cfg.safe_dist)))
+                collision_penalty = torch.where(
+                    dist_btw_drones < self.cfg.safe_dist,
+                    torch.exp(self.cfg.mutual_collision_avoidance_reward_scale * (self.cfg.safe_dist - dist_btw_drones)) - 1.0,
+                    torch.zeros(self.num_envs, device=self.device),
+                )
                 mutual_collision_avoidance_reward[agent] -= collision_penalty
 
         for agent in self.possible_agents:
@@ -362,23 +379,19 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             z_curr = self.robots[agent].data.root_pos_w[:, 2]
             altitude_maintenance_reward = -torch.abs(z_curr - self.cfg.flight_altitude)
 
-            # Reward for maintaining speed close to v_desired
-            v_curr = torch.linalg.norm(self.robots[agent].data.root_lin_vel_w, dim=1)
-            speed_maintenance_reward = torch.exp(-((torch.abs(v_curr - self.cfg.v_desired[agent]) / self.cfg.speed_deviation_tolerance) ** 2))
-
             ### ============= Smoothing ============= ###
-            ang_vel_reward = -torch.linalg.norm(self.w_desired_normalized[agent], dim=1)
+            ang_vel_reward = -torch.linalg.norm(self.robots[agent].data.root_ang_vel_w, dim=1)
 
             lin_vel = torch.linalg.norm(self.robots[agent].data.root_lin_vel_w, dim=1)
             # max_lin_vel_penalty = 1.0 / (1.0 + torch.exp(52.0 * (self.cfg.v_max[agent] - lin_vel)))
             max_lin_vel_penalty = torch.where(
-                lin_vel > self.cfg.v_max[agent], torch.exp(self.cfg.max_lin_vel_penalty_scale * (lin_vel - self.cfg.v_max[agent])) - 1.0, torch.zeros_like(lin_vel)
+                lin_vel > self.cfg.v_max[agent],
+                torch.exp(self.cfg.max_lin_vel_penalty_scale * (lin_vel - self.cfg.v_max[agent])) - 1.0,
+                torch.zeros(self.num_envs, device=self.device),
             )
             max_lin_vel_reward = -max_lin_vel_penalty
 
-            thrust_diff_reward = -torch.abs(self.thrusts_desired_normalized[agent] - self.prev_thrusts_desired_normalized[agent])
-
-            ang_vel_diff_reward = -torch.linalg.norm(self.w_desired_normalized[agent] - self.prev_w_desired_normalized[agent], dim=1)
+            action_diff_reward = -torch.linalg.norm(self.v_polar_coord_desired_normalized[agent] - self.prev_v_polar_coord_desired_normalized[agent], dim=1)
 
             reward = {
                 "meaning_to_live": torch.ones(self.num_envs, device=self.device) * self.cfg.to_live_reward_weight * self.step_dt,
@@ -388,7 +401,6 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 "death_penalty": death_reward * self.cfg.death_penalty_weight,
                 "time_penalty": time_reward * self.cfg.time_penalty_weight * self.step_dt,
                 "altitude_maintenance": altitude_maintenance_reward * self.cfg.altitude_maintenance_reward_weight * self.step_dt,
-                "speed_maintenance": speed_maintenance_reward * self.cfg.speed_maintenance_reward_weight * self.step_dt,
                 "mutual_collision_avoidance": mutual_collision_avoidance_reward[agent]
                 / self.cfg.num_drones
                 * self.cfg.mutual_collision_avoidance_reward_weight
@@ -396,8 +408,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 ### ============= Smoothing ============= ###
                 "ang_vel_penalty": ang_vel_reward * self.cfg.ang_vel_penalty_weight * self.step_dt,
                 "max_lin_vel_penalty": max_lin_vel_reward * self.cfg.max_lin_vel_penalty_weight * self.step_dt,
-                "thrust_diff_penalty": thrust_diff_reward * self.cfg.thrust_diff_penalty_weight * self.step_dt,
-                "ang_vel_diff_penalty": ang_vel_diff_reward * self.cfg.ang_vel_diff_penalty_weight * self.step_dt,
+                "action_diff_penalty": action_diff_reward * self.cfg.action_diff_penalty_weight * self.step_dt,
             }
 
             # Logging
@@ -473,7 +484,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     dmat = torch.cdist(pts, pts)
                     dmat.fill_diagonal_(float("inf"))
                     last_rand_ang = rand_ang
-                    if torch.min(dmat) >= 1.314 * self.cfg.safe_dist:
+                    if torch.min(dmat) >= 2.3 * self.cfg.collide_dist:
                         self.ang[idx] = rand_ang
                         break
                 else:
@@ -495,7 +506,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     dmat = torch.cdist(rand_pts, rand_pts)
                     dmat.fill_diagonal_(float("inf"))
                     last_rand_pts = rand_pts
-                    if torch.min(dmat) >= 1.314 * self.cfg.safe_dist:
+                    if torch.min(dmat) >= 2.3 * self.cfg.collide_dist:
                         init_p[idx] = rand_pts
                         break
                 else:
@@ -507,7 +518,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     dmat = torch.cdist(rand_pts, rand_pts)
                     dmat.fill_diagonal_(float("inf"))
                     last_rand_pts = rand_pts
-                    if torch.min(dmat) >= 1.314 * self.cfg.safe_dist:
+                    if torch.min(dmat) >= 2.3 * self.cfg.collide_dist:
                         goal_p[idx] = rand_pts
                         break
                 else:
@@ -553,22 +564,18 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                 self.robots[agent].data.default_joint_pos[env_ids], self.robots[agent].data.default_joint_vel[env_ids], None, env_ids
             )
 
+            self.p_desired[agent][env_ids] = self.robots[agent].data.root_pos_w[env_ids].clone()
+
             if agent in self.prev_dist_to_goals:
                 self.prev_dist_to_goals[agent][env_ids] = torch.linalg.norm(self.goals[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
             else:
                 self.prev_dist_to_goals[agent] = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
 
-            if agent in self.prev_thrusts_desired_normalized:
-                self.prev_thrusts_desired_normalized[agent][env_ids] = (torch.zeros_like(self.thrusts_desired_normalized[agent][env_ids]) + 1.0) / 2
+            if agent in self.prev_v_polar_coord_desired_normalized:
+                self.prev_v_polar_coord_desired_normalized[agent][env_ids] = torch.zeros_like(self.v_polar_coord_desired_normalized[agent][env_ids])
             else:
-                self.thrusts_desired_normalized[agent] = (torch.zeros(self.num_envs, device=self.device) + 1.0) / 2
-                self.prev_thrusts_desired_normalized[agent] = self.thrusts_desired_normalized[agent].clone()
-
-            if agent in self.prev_w_desired_normalized:
-                self.prev_w_desired_normalized[agent][env_ids] = torch.zeros_like(self.w_desired_normalized[agent][env_ids])
-            else:
-                self.w_desired_normalized[agent] = torch.zeros(self.num_envs, 3, device=self.device)
-                self.prev_w_desired_normalized[agent] = self.w_desired_normalized[agent].clone()
+                self.v_polar_coord_desired_normalized[agent] = torch.zeros(self.num_envs, 2, device=self.device)
+                self.prev_v_polar_coord_desired_normalized[agent] = self.v_polar_coord_desired_normalized[agent].clone()
 
         self.reset_goal_timer[env_ids] = 0.0
 
@@ -622,7 +629,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         dmat = torch.cdist(rand_pts, rand_pts)
                         dmat.fill_diagonal_(float("inf"))
                         last_rand_pts = rand_pts
-                        if torch.min(dmat) >= 1.314 * self.cfg.safe_dist:
+                        if torch.min(dmat) >= 2.3 * self.cfg.collide_dist:
                             goal_p[idx] = rand_pts
                             break
                     else:
@@ -689,13 +696,13 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
             obs = torch.cat(
                 [
-                    self.thrusts_desired_normalized[agent_i].unsqueeze(-1),
-                    self.w_desired_normalized[agent_i].clone(),
-                    self.robots[agent_i].data.root_pos_w - self.terrain.env_origins,
+                    self.v_polar_coord_desired_normalized[agent_i].clone(),
+                    # self.robots[agent_i].data.root_pos_w - self.terrain.env_origins,
                     # self.goals[agent_i] - self.terrain.env_origins,
                     body2goal_w,
-                    self.robots[agent_i].data.root_quat_w.clone(),
-                    self.robots[agent_i].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    # self.robots[agent_i].data.root_quat_w.clone(),
+                    # self.robots[agent_i].data.root_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
+                    self.robots[agent_i].data.root_lin_vel_w.clone(),  # TODO: Try to discard velocity observations to reduce sim2real gap
                     # goal_others_w,
                     # body2goal_others_w,
                     self.relative_positions_with_observability[agent_i].clone(),
@@ -707,8 +714,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             # TODO: Where would it make more sense to place ⬇️?
             non_reset_env_ids = ~self.reset_env_ids
             if non_reset_env_ids.any():
-                self.prev_thrusts_desired_normalized[agent_i][non_reset_env_ids] = self.thrusts_desired_normalized[agent_i][non_reset_env_ids].clone()
-                self.prev_w_desired_normalized[agent_i][non_reset_env_ids] = self.w_desired_normalized[agent_i][non_reset_env_ids].clone()
+                self.prev_v_polar_coord_desired_normalized[agent_i][non_reset_env_ids] = self.v_polar_coord_desired_normalized[agent_i][non_reset_env_ids].clone()
 
         # Scroll or reset (fill in the first frame) the observation buffer
         for agent in self.cfg.possible_agents:
@@ -769,12 +775,12 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         self.goal_visualizers[agent] = VisualizationMarkers(marker_cfg)
                         self.goal_visualizers[agent].set_visibility(True)
 
-            if self.cfg.debug_vis_safe_dist:
-                if not hasattr(self, "safe_dist_visualizers"):
-                    self.safe_dist_visualizers = {}
+            if self.cfg.debug_vis_collide_dist:
+                if not hasattr(self, "collide_dist_visualizers"):
+                    self.collide_dist_visualizers = {}
                     for i, agent in enumerate(self.possible_agents):
                         marker_cfg = VisualizationMarkersCfg(
-                            prim_path=f"/Visuals/safe_dist_{i}",
+                            prim_path=f"/Visuals/collide_dist_{i}",
                             markers={
                                 "cylinder": sim_utils.CylinderCfg(
                                     radius=self.cfg.collide_dist / 2,
@@ -783,8 +789,8 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                                 )
                             },
                         )
-                        self.safe_dist_visualizers[agent] = VisualizationMarkers(marker_cfg)
-                        self.safe_dist_visualizers[agent].set_visibility(True)
+                        self.collide_dist_visualizers[agent] = VisualizationMarkers(marker_cfg)
+                        self.collide_dist_visualizers[agent].set_visibility(True)
 
             if self.cfg.debug_vis_rel_pos:
                 if not hasattr(self, "rel_pos_visualizers"):
@@ -811,11 +817,11 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             for agent in self.possible_agents:
                 self.goal_visualizers[agent].visualize(translations=self.goals[agent])
 
-        if hasattr(self, "safe_dist_visualizers"):
+        if hasattr(self, "collide_dist_visualizers"):
             for agent in self.possible_agents:
                 t = self.robots[agent].data.root_pos_w.clone()
                 t[:, 2] -= 0.077
-                self.safe_dist_visualizers[agent].visualize(translations=t)
+                self.collide_dist_visualizers[agent].visualize(translations=t)
 
         if hasattr(self, "rel_pos_visualizers"):
             t = self.common_step_counter * self.step_dt
@@ -847,78 +853,16 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                         frac = float(p + 1) / (self.num_vis_point + 1)
                         self.rel_pos_visualizers[j][p].visualize(translations=orig[mask] + rel_pos[mask] * frac)
 
-    def _publish_debug_signals(self):
-
-        t = self._get_ros_timestamp()
-        agent = "drone_0"
-        env_id = 0
-
-        # Publish states
-        state = self.robots[agent].data.root_state_w[env_id]
-        p_odom = state[:3].cpu().numpy()
-        q_odom = state[3:7].cpu().numpy()
-        v_odom = state[7:10].cpu().numpy()
-        w_odom = state[10:13].cpu().numpy()
-
-        odom_msg = Odometry()
-        odom_msg.header.stamp = t
-        odom_msg.header.frame_id = "world"
-        odom_msg.child_frame_id = "base_link"
-        odom_msg.pose.pose.position.x = float(p_odom[0])
-        odom_msg.pose.pose.position.y = float(p_odom[1])
-        odom_msg.pose.pose.position.z = float(p_odom[2])
-        odom_msg.pose.pose.orientation.w = float(q_odom[0])
-        odom_msg.pose.pose.orientation.x = float(q_odom[1])
-        odom_msg.pose.pose.orientation.y = float(q_odom[2])
-        odom_msg.pose.pose.orientation.z = float(q_odom[3])
-        odom_msg.twist.twist.linear.x = float(v_odom[0])
-        odom_msg.twist.twist.linear.y = float(v_odom[1])
-        odom_msg.twist.twist.linear.z = float(v_odom[2])
-        odom_msg.twist.twist.angular.x = float(w_odom[0])
-        odom_msg.twist.twist.angular.y = float(w_odom[1])
-        odom_msg.twist.twist.angular.z = float(w_odom[2])
-        self.odom_pub.publish(odom_msg)
-
-        # Publish actions
-        thrust_desired = self.thrusts_desired[agent][env_id, 0, 2].cpu().numpy()
-        w_desired = self.w_desired[agent][env_id].cpu().numpy()
-        m_desired = self.m_desired[agent][env_id, 0, :].cpu().numpy()
-
-        action_msg = TwistStamped()
-        action_msg.header.stamp = t
-        action_msg.header.frame_id = "world"
-        action_msg.twist.linear.x = float(thrust_desired)
-        action_msg.twist.angular.x = float(w_desired[0])
-        action_msg.twist.angular.y = float(w_desired[1])
-        action_msg.twist.angular.z = float(w_desired[2])
-        self.action_pub.publish(action_msg)
-
-        m_desired_msg = Vector3Stamped()
-        m_desired_msg.header.stamp = t
-        m_desired_msg.vector.x = float(m_desired[0])
-        m_desired_msg.vector.y = float(m_desired[1])
-        m_desired_msg.vector.z = float(m_desired[2])
-        self.m_desired_pub.publish(m_desired_msg)
-
-    def _get_ros_timestamp(self) -> Time:
-        sim_time = self._sim_step_counter * self.physics_dt
-
-        stamp = Time()
-        stamp.sec = int(sim_time)
-        stamp.nanosec = int((sim_time - stamp.sec) * 1e9)
-
-        return stamp
-
 
 from config import agents
 
 
 gym.register(
-    id="FAST-Swarm-Bodyrate",
-    entry_point=SwarmBodyrateEnv,
+    id="FAST-Swarm-Vel",
+    entry_point=SwarmVelEnv,
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": SwarmBodyrateEnvCfg,
+        "env_cfg_entry_point": SwarmVelEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:swarm_sb3_ppo_cfg.yaml",
         "skrl_ppo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ppo_cfg.yaml",
         "skrl_ippo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ippo_cfg.yaml",

@@ -15,7 +15,8 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [1024, 1024, 1024, 512, 512, 256]
+        layers: [1024, 1024, 512, 512, 256]
+        # layers: [1024, 512]
         activations: elu
     output: ACTIONS
   value:  # see deterministic_model parameters
@@ -24,7 +25,8 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [1024, 1024, 1024, 512, 512, 256]
+        layers: [1024, 1024, 512, 512, 256]
+        # layers: [1024, 512]
         activations: elu
     output: ONE
 
@@ -42,14 +44,14 @@ agent:
   class: IPPO
   shared_parameters: True
   # rollouts: 100  # 10 steps/sec for waypoint envs
-  rollouts: 200  # 50 steps/sec for bodyrate envs
+  rollouts: 150  # 50 steps/sec for bodyrate envs
   learning_epochs: 3
-  mini_batches: 4
+  mini_batches: 5
   discount_factor: 0.99
   lambda: 0.95
   learning_rate: 1.0e-04
-  # learning_rate_scheduler: KLAdaptiveLR
-  learning_rate_scheduler: null
+  learning_rate_scheduler: KLAdaptiveLR
+  # learning_rate_scheduler: null
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.016
     max_lr: 0.0005
