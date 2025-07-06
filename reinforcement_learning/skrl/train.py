@@ -66,7 +66,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from datetime import datetime
 import gymnasium as gym
 from loguru import logger
-import os
 import random
 import rclpy
 import shutil

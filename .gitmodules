@@ -7,3 +7,6 @@
 [submodule "envs/lib/IsaacLab"]
 	path = envs/lib/IsaacLab
 	url = git@github.com:lyf-FATAS/IsaacLab.git
+[submodule "reinforcement_learning/lib/rsl_rl"]
+	path = reinforcement_learning/lib/rsl_rl
+	url = git@github.com:lyf-FATAS/rsl_rl.git
