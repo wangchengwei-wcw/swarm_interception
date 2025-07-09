@@ -12,14 +12,14 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class SwarmVelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 100
     max_iterations = 500
-    save_interval = 20
+    save_interval = 25
     experiment_name = ""
-    clip_actions = 1.0,
+    clip_actions = 1.0
     empirical_normalization = True
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,
-        actor_hidden_dims=[1024, 1024, 1024, 512, 512, 256],
-        critic_hidden_dims=[1024, 1024, 1024, 512, 512, 256],
+        init_noise_std=1.0,
+        actor_hidden_dims=[1024, 1024, 1024, 512, 512, 512, 256],
+        critic_hidden_dims=[1024, 1024, 1024, 512, 512, 512, 256],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(

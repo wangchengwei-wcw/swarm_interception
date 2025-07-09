@@ -35,7 +35,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 0.01
+    death_penalty_weight = 0.2
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 1.0
@@ -43,7 +43,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     mutual_collision_avoidance_reward_weight = 0.1
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.1
+    action_diff_penalty_weight = 0.01
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
@@ -63,7 +63,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     birth_circle_radius = 2.7
 
     # TODO: Improve dirty curriculum
-    enable_dirty_curriculum = True
+    enable_dirty_curriculum = False
     curriculum_steps = 30000
     init_death_penalty_weight = 0.0
     init_mutual_collision_avoidance_reward_weight = 0.0
@@ -442,10 +442,7 @@ class SwarmVelEnv(DirectMARLEnv):
                 "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
                 "death_penalty": death_reward * self.cfg.death_penalty_weight,
                 "time_penalty": time_reward * self.cfg.time_penalty_weight * self.step_dt,
-                "mutual_collision_avoidance": mutual_collision_avoidance_reward[agent]
-                / self.cfg.num_drones
-                * self.cfg.mutual_collision_avoidance_reward_weight
-                * self.step_dt,
+                "mutual_collision_avoidance": mutual_collision_avoidance_reward[agent] * self.cfg.mutual_collision_avoidance_reward_weight * self.step_dt,
                 ### ============= Smoothing ============= ###
                 "max_lin_vel_penalty": max_lin_vel_reward * self.cfg.max_lin_vel_penalty_weight * self.step_dt,
                 "ang_vel_penalty": ang_vel_reward * self.cfg.ang_vel_penalty_weight * self.step_dt,

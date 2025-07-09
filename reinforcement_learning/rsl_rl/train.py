@@ -186,7 +186,7 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRun
         }
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
-    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions[0])
+    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # Write git state to logs

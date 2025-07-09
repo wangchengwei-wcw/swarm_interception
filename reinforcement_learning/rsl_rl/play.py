@@ -108,7 +108,7 @@ def main():
         }
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
-    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions[0])
+    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     # Load previously trained model
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
