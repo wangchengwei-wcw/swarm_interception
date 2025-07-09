@@ -8,7 +8,8 @@ from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_qua
 class Controller:
     def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor, num_envs: int):
         # Params
-        self.kPp = torch.tensor([2.0, 2.0, 20.0], dtype=torch.float32, device=gravity.device)
+        # self.kPp = torch.tensor([2.0, 2.0, 20.0], dtype=torch.float32, device=gravity.device)  # 50Hz velocity control
+        self.kPp = torch.tensor([0.1, 0.1, 1.0], dtype=torch.float32, device=gravity.device)  # 2~5Hz velocity control
         self.kPv = torch.tensor([8.0, 8.0, 30.0], dtype=torch.float32, device=gravity.device)
         self.kPR = torch.tensor([10.0, 10.0, 10.0], dtype=torch.float32, device=gravity.device)
         self.kPw = torch.tensor([0.05, 0.05, 0.05], dtype=torch.float32, device=gravity.device)

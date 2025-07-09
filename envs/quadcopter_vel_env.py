@@ -53,7 +53,7 @@ class QuadcopterVelEnvCfg(DirectRLEnvCfg):
     episode_length_s = 30.0
     physics_freq = 200.0
     control_freq = 100.0
-    action_freq = 50.0
+    action_freq = 2.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
@@ -201,7 +201,7 @@ class QuadcopterVelEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         z_exceed_bounds = torch.logical_or(self.robot.data.root_pos_w[:, 2] < 0.5, self.robot.data.root_pos_w[:, 2] > 1.5)
         ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robot.data.root_quat_w))
-        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
+        died = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
