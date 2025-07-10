@@ -35,15 +35,15 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 0.01
-    approaching_goal_reward_weight = 1.0
+    death_penalty_weight = 0.1
+    approaching_goal_reward_weight = 5.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 0.01
+    mutual_collision_avoidance_reward_weight = 0.1
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.01
+    action_diff_penalty_weight = 0.001
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
@@ -64,10 +64,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
 
     # TODO: Improve dirty curriculum
     enable_dirty_curriculum = False
-    curriculum_steps = 300 * 500
+    curriculum_steps = 300 * 350
     init_death_penalty_weight = 0.01
     init_mutual_collision_avoidance_reward_weight = 0.01
-    init_action_diff_penalty_weight = 0.001
+    init_action_diff_penalty_weight = 0.0
 
     # Env
     episode_length_s = 20.0
@@ -105,7 +105,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.state_space = self.history_length * self.transient_state_dim
         self.a_max = {agent: 3.0 for agent in self.possible_agents}
-        self.v_max = {agent: 1.5 for agent in self.possible_agents}
+        self.v_max = {agent: 1.3 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -270,8 +270,15 @@ class SwarmAccEnv(DirectMARLEnv):
             norm_xy = torch.norm(a_xy_desired, dim=1, keepdim=True)
             clip_scale = torch.clamp(norm_xy / self.cfg.a_max[agent], min=1.0)
             self.a_desired[agent][:, :2] = a_xy_desired / clip_scale
-            self.p_desired[agent][:, :2] += self.v_desired[agent][:, :2] * self.step_dt + 0.5 * self.a_desired[agent][:, :2] * self.step_dt**2
+
+            self.p_desired[agent][:, :2] = (
+                self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.step_dt + 0.5 * self.a_desired[agent][:, :2] * self.step_dt**2
+            )
+
             self.v_desired[agent][:, :2] += self.a_desired[agent][:, :2] * self.step_dt
+            speed_xy = torch.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
+            clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
+            self.v_desired[agent][:, :2] /= clip_scale
 
     def _apply_action(self) -> None:
         if self.control_counter % self.cfg.control_decimation == 0:
@@ -639,7 +646,7 @@ class SwarmAccEnv(DirectMARLEnv):
             self.controllers[agent].reset(env_ids)
 
             self.p_desired[agent][env_ids] = self.robots[agent].data.root_pos_w[env_ids].clone()
-            self.v_desired[agent][env_ids] = self.robots[agent].data.root_lin_vel_w[env_ids].clone()
+            self.v_desired[agent][env_ids] = torch.zeros_like(self.robots[agent].data.root_lin_vel_w[env_ids])
 
             if agent in self.prev_dist_to_goals:
                 self.prev_dist_to_goals[agent][env_ids] = torch.linalg.norm(self.goals[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
