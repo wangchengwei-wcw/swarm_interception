@@ -10,16 +10,16 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class SwarmVelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 30
-    max_iterations = 500
-    save_interval = 25
+    num_steps_per_env = 20
+    max_iterations = 1000
+    save_interval = 50
     experiment_name = ""
     clip_actions = 1.0
     empirical_normalization = True
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[1024, 1024, 1024, 512, 512, 512, 256],
-        critic_hidden_dims=[1024, 1024, 1024, 512, 512, 512, 256],
+        init_noise_std=0.6,
+        actor_hidden_dims=[2048, 2048, 2048, 1024, 1024, 1024, 512],
+        critic_hidden_dims=[2048, 2048, 2048, 1024, 1024, 1024, 512],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(
@@ -29,6 +29,38 @@ class SwarmVelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.0005,
         num_learning_epochs=5,
         num_mini_batches=2,
+        learning_rate=2.0e-4,
+        schedule="fixed",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.016,
+        max_grad_norm=1.0,
+    )
+
+
+@configclass
+class SwarmAccPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    num_steps_per_env = 350
+    max_iterations = 1000
+    save_interval = 20
+    experiment_name = ""
+    clip_actions = 1.0
+    empirical_normalization = True
+    policy = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        # actor_hidden_dims=[2048, 2048, 2048, 1024, 1024, 512],
+        # critic_hidden_dims=[2048, 2048, 2048, 1024, 1024, 512],
+        actor_hidden_dims=[1024, 1024, 1024, 512, 512, 256],
+        critic_hidden_dims=[1024, 1024, 1024, 512, 512, 256],
+        activation="elu",
+    )
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.0005,
+        num_learning_epochs=5,
+        num_mini_batches=4,
         learning_rate=2.0e-4,
         schedule="fixed",
         gamma=0.99,

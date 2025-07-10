@@ -22,7 +22,7 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1000, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
@@ -47,9 +47,17 @@ if args_cli.task is None:
     raise ValueError("The task argument is required and cannot be None.")
 elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
-elif args_cli.task not in ["FAST-Quadcopter-Bodyrate", "FAST-Quadcopter-Vel", "FAST-Quadcopter-Waypoint", "FAST-Swarm-Bodyrate", "FAST-Swarm-Vel", "FAST-Swarm-Waypoint"]:
+elif args_cli.task not in [
+    "FAST-Quadcopter-Bodyrate",
+    "FAST-Quadcopter-Vel",
+    "FAST-Quadcopter-Waypoint",
+    "FAST-Swarm-Bodyrate",
+    "FAST-Swarm-Acc",
+    "FAST-Swarm-Vel",
+    "FAST-Swarm-Waypoint",
+]:
     raise ValueError(
-        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
     )
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -103,7 +111,7 @@ from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_vel_env, swarm_waypoint_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_acc_env, swarm_vel_env, swarm_waypoint_env
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -165,6 +173,8 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRun
         env_src_file = "camera_waypoint_env.py"
     elif args_cli.task == "FAST-Swarm-Bodyrate":
         env_src_file = "swarm_bodyrate_env.py"
+    elif args_cli.task == "FAST-Swarm-Acc":
+        env_src_file = "swarm_acc_env.py"
     elif args_cli.task == "FAST-Swarm-Vel":
         env_src_file = "swarm_vel_env.py"
     elif args_cli.task == "FAST-Swarm-Waypoint":

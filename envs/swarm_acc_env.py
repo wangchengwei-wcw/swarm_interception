@@ -11,7 +11,7 @@ from loguru import logger
 from rclpy.node import Node
 from builtin_interfaces.msg import Time
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TwistStamped, Vector3Stamped
+from geometry_msgs.msg import AccelStamped, Vector3Stamped
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -29,18 +29,18 @@ from utils.controller import Controller
 
 
 @configclass
-class SwarmVelEnvCfg(DirectMARLEnvCfg):
+class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
     viewer = ViewerCfg(eye=(3.0, -3.0, 40.0))
 
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 1.0
+    death_penalty_weight = 0.01
     approaching_goal_reward_weight = 1.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 1.0
+    mutual_collision_avoidance_reward_weight = 0.01
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_diff_penalty_weight = 0.01
@@ -63,8 +63,8 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     birth_circle_radius = 2.7
 
     # TODO: Improve dirty curriculum
-    enable_dirty_curriculum = True
-    curriculum_steps = 300 * 20
+    enable_dirty_curriculum = False
+    curriculum_steps = 300 * 500
     init_death_penalty_weight = 0.01
     init_mutual_collision_avoidance_reward_weight = 0.01
     init_action_diff_penalty_weight = 0.001
@@ -73,7 +73,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     episode_length_s = 20.0
     physics_freq = 200.0
     control_freq = 100.0
-    action_freq = 1.0
+    action_freq = 50.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     num_drones = 4  # Number of drones per environment
@@ -104,6 +104,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.state_space = self.history_length * self.transient_state_dim
+        self.a_max = {agent: 3.0 for agent in self.possible_agents}
         self.v_max = {agent: 1.5 for agent in self.possible_agents}
 
     # Simulation
@@ -147,10 +148,10 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     debug_vis_rel_pos = False
 
 
-class SwarmVelEnv(DirectMARLEnv):
-    cfg: SwarmVelEnvCfg
+class SwarmAccEnv(DirectMARLEnv):
+    cfg: SwarmAccEnvCfg
 
-    def __init__(self, cfg: SwarmVelEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: SwarmAccEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
@@ -188,7 +189,7 @@ class SwarmVelEnv(DirectMARLEnv):
             for agent in self.cfg.possible_agents
         }
         self.control_counter = 0
-        self.v_xy_desired_normalized, self.prev_v_xy_desired_normalized = {}, {}
+        self.a_xy_desired_normalized, self.prev_a_xy_desired_normalized = {}, {}
 
         # Denormalized actions
         self.p_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
@@ -223,9 +224,11 @@ class SwarmVelEnv(DirectMARLEnv):
         self.visualize_new_cmd = False
 
         # ROS2
-        self.node = Node("swarm_vel_env", namespace="swarm_vel_env")
+        self.node = Node("swarm_acc_env", namespace="swarm_acc_env")
         self.odom_pub = self.node.create_publisher(Odometry, "odom", 10)
-        self.v_desired_pub = self.node.create_publisher(TwistStamped, "v_desired", 10)
+        self.action_pub = self.node.create_publisher(Odometry, "action", 10)
+        self.a_desired_pub = self.node.create_publisher(AccelStamped, "a_desired", 10)
+        self.a_desired_total_pub = self.node.create_publisher(AccelStamped, "a_desired_total", 10)
         self.m_desired_pub = self.node.create_publisher(Vector3Stamped, "m_desired", 10)
 
     def _setup_scene(self):
@@ -262,12 +265,13 @@ class SwarmVelEnv(DirectMARLEnv):
         self.reset_env_ids[:] = False
 
         for agent in self.possible_agents:
-            self.v_xy_desired_normalized[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
-            v_xy_desired = self.v_xy_desired_normalized[agent] * self.cfg.v_max[agent]
-            speed_xy = torch.norm(v_xy_desired, dim=1, keepdim=True)
-            clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
-            self.v_desired[agent][:, :2] = v_xy_desired / clip_scale
-            self.p_desired[agent][:, :2] = self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.step_dt
+            self.a_xy_desired_normalized[agent] = actions[agent].clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+            a_xy_desired = self.a_xy_desired_normalized[agent] * self.cfg.a_max[agent]
+            norm_xy = torch.norm(a_xy_desired, dim=1, keepdim=True)
+            clip_scale = torch.clamp(norm_xy / self.cfg.a_max[agent], min=1.0)
+            self.a_desired[agent][:, :2] = a_xy_desired / clip_scale
+            self.p_desired[agent][:, :2] += self.v_desired[agent][:, :2] * self.step_dt + 0.5 * self.a_desired[agent][:, :2] * self.step_dt**2
+            self.v_desired[agent][:, :2] += self.a_desired[agent][:, :2] * self.step_dt
 
     def _apply_action(self) -> None:
         if self.control_counter % self.cfg.control_decimation == 0:
@@ -285,9 +289,16 @@ class SwarmVelEnv(DirectMARLEnv):
                     dim=1,
                 )
 
-                self.a_desired_total[agent], self.thrust_desired[agent], self.q_desired[agent], self.w_desired[agent], self.m_desired[agent] = self.controllers[
-                    agent
-                ].get_control(self.robots[agent].data.root_state_w, state_desired)
+                (
+                    self.a_desired_total[agent],
+                    self.thrust_desired[agent],
+                    self.q_desired[agent],
+                    self.w_desired[agent],
+                    self.m_desired[agent],
+                ) = self.controllers[agent].get_control(
+                    self.robots[agent].data.root_state_w,
+                    state_desired,
+                )
 
                 self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
 
@@ -330,11 +341,11 @@ class SwarmVelEnv(DirectMARLEnv):
                     continue
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
-            #     collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
-            #     collision_died = torch.logical_or(collision_died, collision)
-            #     self.died[agent_i] = torch.logical_or(self.died[agent_i], collision)
+                collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
+                collision_died = torch.logical_or(collision_died, collision)
+                self.died[agent_i] = torch.logical_or(self.died[agent_i], collision)
 
-            # died_unified = torch.logical_or(died_unified, self.died[agent_i])
+            died_unified = torch.logical_or(died_unified, self.died[agent_i])
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -442,7 +453,7 @@ class SwarmVelEnv(DirectMARLEnv):
             )
             max_lin_vel_reward = -max_lin_vel_penalty
 
-            action_diff_reward = -torch.linalg.norm(self.v_xy_desired_normalized[agent] - self.prev_v_xy_desired_normalized[agent], dim=1)
+            action_diff_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent] - self.prev_a_xy_desired_normalized[agent], dim=1)
 
             reward = {
                 "meaning_to_live": torch.ones(self.num_envs, device=self.device) * self.cfg.to_live_reward_weight * self.step_dt,
@@ -628,17 +639,18 @@ class SwarmVelEnv(DirectMARLEnv):
             self.controllers[agent].reset(env_ids)
 
             self.p_desired[agent][env_ids] = self.robots[agent].data.root_pos_w[env_ids].clone()
+            self.v_desired[agent][env_ids] = self.robots[agent].data.root_lin_vel_w[env_ids].clone()
 
             if agent in self.prev_dist_to_goals:
                 self.prev_dist_to_goals[agent][env_ids] = torch.linalg.norm(self.goals[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
             else:
                 self.prev_dist_to_goals[agent] = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
 
-            if agent in self.prev_v_xy_desired_normalized:
-                self.prev_v_xy_desired_normalized[agent][env_ids] = torch.zeros_like(self.v_xy_desired_normalized[agent][env_ids])
+            if agent in self.prev_a_xy_desired_normalized:
+                self.prev_a_xy_desired_normalized[agent][env_ids] = torch.zeros_like(self.a_xy_desired_normalized[agent][env_ids])
             else:
-                self.v_xy_desired_normalized[agent] = torch.zeros(self.num_envs, 2, device=self.device)
-                self.prev_v_xy_desired_normalized[agent] = self.v_xy_desired_normalized[agent].clone()
+                self.a_xy_desired_normalized[agent] = torch.zeros(self.num_envs, 2, device=self.device)
+                self.prev_a_xy_desired_normalized[agent] = self.a_xy_desired_normalized[agent].clone()
 
             self.reset_goal_timer[agent][env_ids] = 0.0
 
@@ -770,7 +782,7 @@ class SwarmVelEnv(DirectMARLEnv):
 
             obs = torch.cat(
                 [
-                    self.v_xy_desired_normalized[agent_i].clone(),
+                    self.a_xy_desired_normalized[agent_i].clone(),
                     self.robots[agent_i].data.root_pos_w[:, :2] - self.terrain.env_origins[:, :2],
                     self.goals[agent_i][:, :2] - self.terrain.env_origins[:, :2],
                     # body2goal_w[:, :2].clone(),
@@ -788,7 +800,7 @@ class SwarmVelEnv(DirectMARLEnv):
             # TODO: Where would it make more sense to place ⬇️?
             non_reset_env_ids = ~self.reset_env_ids
             if non_reset_env_ids.any():
-                self.prev_v_xy_desired_normalized[agent_i][non_reset_env_ids] = self.v_xy_desired_normalized[agent_i][non_reset_env_ids].clone()
+                self.prev_a_xy_desired_normalized[agent_i][non_reset_env_ids] = self.a_xy_desired_normalized[agent_i][non_reset_env_ids].clone()
 
         # Scroll or reset (fill in the first frame) the observation buffer
         for agent in self.cfg.possible_agents:
@@ -960,16 +972,54 @@ class SwarmVelEnv(DirectMARLEnv):
         self.odom_pub.publish(odom_msg)
 
         # Publish actions
+        p_desired = self.p_desired[agent][env_id].cpu().numpy()
         v_desired = self.v_desired[agent][env_id].cpu().numpy()
+        a_desired = self.a_desired[agent][env_id].cpu().numpy()
 
-        v_desired_msg = TwistStamped()
-        v_desired_msg.header.stamp = t
-        v_desired_msg.header.frame_id = "world"
-        v_desired_msg.twist.linear.x = float(v_desired[0])
-        v_desired_msg.twist.linear.y = float(v_desired[1])
-        v_desired_msg.twist.linear.z = float(v_desired[2])
+        a_desired_total = self.a_desired_total[agent][env_id].cpu().numpy()
+        q_desired = self.q_desired[agent][env_id].cpu().numpy()
+        w_desired = self.w_desired[agent][env_id].cpu().numpy()
+        m_desired = self.m_desired[agent][env_id].cpu().numpy()
 
-        self.v_desired_pub.publish(v_desired_msg)
+        action_msg = Odometry()
+        action_msg.header.stamp = t
+        action_msg.header.frame_id = "world"
+        action_msg.child_frame_id = "base_link"
+        action_msg.pose.pose.position.x = float(p_desired[0])
+        action_msg.pose.pose.position.y = float(p_desired[1])
+        action_msg.pose.pose.position.z = float(p_desired[2])
+        action_msg.pose.pose.orientation.w = float(q_desired[0])
+        action_msg.pose.pose.orientation.x = float(q_desired[1])
+        action_msg.pose.pose.orientation.y = float(q_desired[2])
+        action_msg.pose.pose.orientation.z = float(q_desired[3])
+        action_msg.twist.twist.linear.x = float(v_desired[0])
+        action_msg.twist.twist.linear.y = float(v_desired[1])
+        action_msg.twist.twist.linear.z = float(v_desired[2])
+        action_msg.twist.twist.angular.x = float(w_desired[0])
+        action_msg.twist.twist.angular.y = float(w_desired[1])
+        action_msg.twist.twist.angular.z = float(w_desired[2])
+        self.action_pub.publish(action_msg)
+
+        a_desired_msg = AccelStamped()
+        a_desired_msg.header.stamp = t
+        a_desired_msg.accel.linear.x = float(a_desired[0])
+        a_desired_msg.accel.linear.y = float(a_desired[1])
+        a_desired_msg.accel.linear.z = float(a_desired[2])
+        self.a_desired_pub.publish(a_desired_msg)
+
+        a_desired_total_msg = AccelStamped()
+        a_desired_total_msg.header.stamp = t
+        a_desired_total_msg.accel.linear.x = float(a_desired_total[0])
+        a_desired_total_msg.accel.linear.y = float(a_desired_total[1])
+        a_desired_total_msg.accel.linear.z = float(a_desired_total[2])
+        self.a_desired_total_pub.publish(a_desired_total_msg)
+
+        m_desired_msg = Vector3Stamped()
+        m_desired_msg.header.stamp = t
+        m_desired_msg.vector.x = float(m_desired[0])
+        m_desired_msg.vector.y = float(m_desired[1])
+        m_desired_msg.vector.z = float(m_desired[2])
+        self.m_desired_pub.publish(m_desired_msg)
 
     def _get_ros_timestamp(self) -> Time:
         sim_time = self._sim_step_counter * self.physics_dt
@@ -985,15 +1035,15 @@ from config import agents
 
 
 gym.register(
-    id="FAST-Swarm-Vel",
-    entry_point=SwarmVelEnv,
+    id="FAST-Swarm-Acc",
+    entry_point=SwarmAccEnv,
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": SwarmVelEnvCfg,
+        "env_cfg_entry_point": SwarmAccEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:swarm_sb3_ppo_cfg.yaml",
         "skrl_ppo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ppo_cfg.yaml",
         "skrl_ippo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_ippo_cfg.yaml",
         "skrl_mappo_cfg_entry_point": f"{agents.__name__}:swarm_skrl_mappo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.swarm_rsl_rl_ppo_cfg:SwarmVelPPORunnerCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.swarm_rsl_rl_ppo_cfg:SwarmAccPPORunnerCfg",
     },
 )

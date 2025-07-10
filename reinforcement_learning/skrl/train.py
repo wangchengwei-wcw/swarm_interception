@@ -30,7 +30,7 @@ parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to 
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL policy training iterations.")
 parser.add_argument("--save_interval", type=int, default=None, help="Interval between checkpoints (in steps).")
-parser.add_argument("--video", action="store_true", default=True, help="Record videos during training.")
+parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in steps).")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint to resume training.")
 parser.add_argument("--init_log_std", type=float, default=None, help="Initial log standard deviation of the Gaussian model.")
