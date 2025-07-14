@@ -36,7 +36,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # Reward weights
     to_live_reward_weight = 0.0  # 《活着》
     death_penalty_weight = 1.0
-    approaching_goal_reward_weight = 1.0
+    approaching_goal_reward_weight = 2.5
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
@@ -73,9 +73,10 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     episode_length_s = 20.0
     physics_freq = 200.0
     control_freq = 100.0
-    action_freq = 1.0
+    action_freq = 5.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
+    num_drones = 4  # Number of drones per environment
     num_drones = 4  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
@@ -92,12 +93,15 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     # Domain randomization
     enable_domain_randomization = False
 
-    # Informed reset
-    enable_informed_reset = False
-    informed_reset_prob = 0.77
-    min_informed_time = 0.5
-    max_informed_time = 1.5
-    max_failure_buffer_size = 1000
+    # Experience replay
+    enable_experience_replay = True
+    collision_experience_replay_prob = 0.77
+    max_collision_experience_buffer_size = 1000
+    min_recording_time_before_collision = 0.5
+    max_recording_time_before_collision = 2.0
+    max_experience_state_buffer_size = int(action_freq * episode_length_s + history_length - 1)
+    min_recorded_steps_before_collision = int(action_freq * min_recording_time_before_collision)
+    max_recorded_steps_before_collision = int(action_freq * max_recording_time_before_collision)
 
     def __post_init__(self):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
@@ -212,8 +216,8 @@ class SwarmVelEnv(DirectMARLEnv):
         }
         self.state_buffer = torch.zeros(self.cfg.history_length, self.num_envs, self.cfg.transient_state_dim, device=self.device)
 
-        self.history_state_buffer = []
-        self.failure_buffer = []
+        self.experience_state_buffer = []
+        self.collision_experience_buffer = []
 
         # Logging
         self.episode_sums = {}
@@ -330,44 +334,76 @@ class SwarmVelEnv(DirectMARLEnv):
                     continue
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
-            #     collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
-            #     collision_died = torch.logical_or(collision_died, collision)
+                collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
+                collision_died = torch.logical_or(collision_died, collision)
             #     self.died[agent_i] = torch.logical_or(self.died[agent_i], collision)
 
             # died_unified = torch.logical_or(died_unified, self.died[agent_i])
 
+        if self.experience_replayed is not None and self.experience_replayed:
+            if self.experience_replay_ids is not None:
+                print("==== Experience Replay Debug Info ====")
+                for env_id in self.experience_replay_ids:
+                    print(f"Env {env_id}: " f"collision_died={bool(collision_died[env_id])}")
+                print("======================================")
+            self.experience_replayed = False
+
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        all_states = []
+        all_agent_states = []
         for agent in self.possible_agents:
-            state = self.robots[agent].data.root_state_w.clone()
-            state[:, :3] -= self.terrain.env_origins
-            goal = self.goals[agent].clone()
-            goal[:, :3] -= self.terrain.env_origins
+            body2goal_w = self.goals[agent] - self.robots[agent].data.root_pos_w
             xy_boundary = self.xy_boundary.clone().unsqueeze(-1)
-            state_with_goal = torch.cat([state, goal, xy_boundary], dim=-1)  # [num_envs, 17]
-            all_states.append(state_with_goal)
-        all_states_tensor = torch.stack(all_states, dim=1)  # [num_envs, num_agents, 17]
-        self.history_state_buffer.append(all_states_tensor)
-        if len(self.history_state_buffer) > self.cfg.max_informed_time * self.cfg.action_freq:
-            self.history_state_buffer.pop(0)
+            curr_state = torch.cat(
+                [
+                    self.robots[agent].data.root_pos_w - self.terrain.env_origins,
+                    body2goal_w,
+                    self.robots[agent].data.root_quat_w.clone(),
+                    self.robots[agent].data.root_vel_w.clone(),
+                    xy_boundary,
+                ],
+                dim=-1,
+            )  # [num_envs, 17]
+            curr_obs = torch.cat(
+                [
+                    self.v_xy_desired_normalized[agent].clone(),
+                    self.robots[agent].data.root_pos_w[:, :2] - self.terrain.env_origins[:, :2],
+                    self.goals[agent][:, :2] - self.terrain.env_origins[:, :2],
+                    self.robots[agent].data.root_lin_vel_w[:, :2].clone(),
+                ],
+                dim=-1,
+            )  # [num_envs, 8]
+            all_agent_states.append(torch.cat([curr_state, curr_obs], dim=-1))  # [num_envs, 25]
 
-        history_state_tensor = torch.stack(self.history_state_buffer, dim=0)  # [num_frames, num_envs, num_agents, state_size]
+        self.experience_state_buffer.append(torch.stack(all_agent_states, dim=1))  # [num_envs, num_agents, 25]
+        if len(self.experience_state_buffer) > self.cfg.max_experience_state_buffer_size:
+            self.experience_state_buffer.pop(0)
 
+        experience_states = torch.stack(self.experience_state_buffer, dim=0)  # [num_frames, num_envs, num_agents, state_size]
         mask = collision_died  # [num_envs] bool indicating which environments collided
-        if mask.any() and len(self.history_state_buffer) >= self.cfg.max_informed_time * self.cfg.action_freq:
+        if mask.any() and len(self.experience_state_buffer) >= self.cfg.max_experience_state_buffer_size:
+            min_frames_before_collision = self.cfg.min_recorded_steps_before_collision
+            max_frames_before_collision = min(self.cfg.max_recorded_steps_before_collision, self.cfg.max_experience_state_buffer_size - self.cfg.history_length + 1)
+
             collided_envs = torch.nonzero(mask, as_tuple=True)[0]
-            frame_indices = torch.randint(0, len(self.history_state_buffer) - int(self.cfg.min_informed_time * self.cfg.action_freq), size=(collided_envs.shape[0],))
-            failure_states = history_state_tensor[frame_indices, collided_envs]
+            random_frame_idx = torch.randint(
+                low=len(self.experience_state_buffer) - max_frames_before_collision,
+                high=len(self.experience_state_buffer) - min_frames_before_collision,
+                size=(collided_envs.shape[0],),
+            )
+            recorded_frames_idxs = random_frame_idx[:, None] - torch.arange(self.cfg.history_length - 1, -1, -1)[None, :]  # [num_collided_envs, history_length]
+            recorded_frames = experience_states[
+                recorded_frames_idxs, collided_envs.unsqueeze(1).expand(-1, self.cfg.history_length), :, :
+            ]  # [num_collided_envs, history_length, num_agents, state_size]
+            # select valid frames which are not all zeros
+            valid_recorded_frames = recorded_frames[~torch.all(recorded_frames == 0, dim=(1, 2, 3))]
+            if valid_recorded_frames.shape[0] > 0:
+                self.collision_experience_buffer.extend(valid_recorded_frames)
+            while len(self.collision_experience_buffer) > self.cfg.max_collision_experience_buffer_size:
+                self.collision_experience_buffer.pop(0)
 
-            non_empty_failure_states = failure_states[~torch.all(failure_states == 0, dim=(1, 2))]
-            if non_empty_failure_states.shape[0] > 0:
-                self.failure_buffer.extend(non_empty_failure_states)
-                while len(self.failure_buffer) > self.cfg.max_failure_buffer_size:
-                    self.failure_buffer.pop(0)
-
-        history_state_tensor[:, torch.nonzero(died_unified, as_tuple=True)[0]] = 0.0
-        self.history_state_buffer = [history_state_tensor[i] for i in range(history_state_tensor.shape[0])]
+        experience_states[:, torch.nonzero(died_unified, as_tuple=True)[0]] = 0.0
+        self.experience_state_buffer = list(torch.unbind(experience_states, dim=0))
 
         return {agent: died_unified for agent in self.cfg.possible_agents}, {agent: time_out for agent in self.cfg.possible_agents}
 
@@ -572,13 +608,16 @@ class SwarmVelEnv(DirectMARLEnv):
                     logger.warning(f"The search for goal positions of the swarm meeting constraints within a side-length {rg} box failed, using the final sample #_#")
                     goal_p[idx] = last_rand_pts
 
-        self.informed = self.cfg.enable_informed_reset and random.random() < self.cfg.informed_reset_prob and len(self.failure_buffer) > 0
-        if self.informed:
-            # Informed reset: set initial state and goal based on a randomly chosen state from the failure buffer
-            informed_states = torch.stack([random.choice(self.failure_buffer) for _ in env_ids])
-            self.informed_ids = env_ids
-        else:
-            informed_states = None
+        self.experience_replay_states = None
+        self.experience_replayed = (
+            self.cfg.enable_experience_replay and random.random() < self.cfg.collision_experience_replay_prob and len(self.collision_experience_buffer) > 0
+        )
+        # experience replay: set initial state and goal based on a randomly chosen state from the failure buffer, and update the observation and state buffers
+        if self.experience_replayed:
+            self.experience_replay_states = torch.stack(
+                [random.choice(self.collision_experience_buffer) for _ in env_ids]
+            )  # [num_envs_to_reset, history_length, num_agents, state_size]
+            self.experience_replay_ids = env_ids
 
         for i, agent in enumerate(self.possible_agents):
             init_state = self.robots[agent].data.default_root_state.clone()
@@ -613,11 +652,14 @@ class SwarmVelEnv(DirectMARLEnv):
             self.goals[agent][env_ids, 2] = float(self.cfg.flight_altitude)
             self.goals[agent][env_ids] += self.terrain.env_origins[env_ids]
 
-            if informed_states is not None:
-                init_state[env_ids, :13] = (informed_states[:, i, :13]).clone()
-                init_state[env_ids, :3] = informed_states[:, i, :3] + self.terrain.env_origins[env_ids]
-                self.goals[agent][env_ids] = informed_states[:, i, 13:16] + self.terrain.env_origins[env_ids]
-                self.xy_boundary[env_ids] = (informed_states[:, i, 16]).clone()
+            if self.experience_replay_states is not None:
+                # Select the last frame of the experience replay state to initialize the robot state
+                state_ = self.experience_replay_states[:, -1, i, :17].clone()  # [num_envs_to_reset, 17]
+                root_pos_w_ = state_[:, 0:3] + self.terrain.env_origins[env_ids]
+                init_state[env_ids, 0:3] = root_pos_w_
+                init_state[env_ids, 3:13] = state_[:, 6:16]  # Quats, lin_vels, ang_vels
+                self.goals[agent][env_ids] = root_pos_w_ + state_[:, 3:6]  # Goals
+                self.xy_boundary[env_ids] = state_[:, 16]
 
             self.robots[agent].write_root_pose_to_sim(init_state[env_ids, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(init_state[env_ids, 7:], env_ids)
@@ -791,11 +833,29 @@ class SwarmVelEnv(DirectMARLEnv):
                 self.prev_v_xy_desired_normalized[agent_i][non_reset_env_ids] = self.v_xy_desired_normalized[agent_i][non_reset_env_ids].clone()
 
         # Scroll or reset (fill in the first frame) the observation buffer
-        for agent in self.cfg.possible_agents:
+        for i, agent in enumerate(self.cfg.possible_agents):
             buf = self.observation_buffer[agent]
             if self.reset_env_ids.any():
-                curr_observation = curr_observations[agent].unsqueeze(0)
-                buf[:, self.reset_env_ids] = curr_observation[:, self.reset_env_ids].repeat(self.cfg.history_length, 1, 1)
+                if self.experience_replayed and self.experience_replay_states is not None:
+                    # Use the experience replay states to initialize the observation buffer
+                    replay_obs_ = self.experience_replay_states[:, :, i, 17:].permute(1, 0, 2).contiguous()  # [history_length, num_envs_to_reset, obs_dim]
+
+                    # Fill the all zero frames with the last non-zero frame
+                    mask_zero_ = replay_obs_.abs().sum(-1) == 0  # [history_length, num_envs_to_reset]
+                    if mask_zero_.any():
+                        first_non_zero_ = (~mask_zero_).int().argmax(dim=0)  # [num_envs_to_reset]
+                        last_zero = first_non_zero_ - 1
+                        t_ = torch.arange(replay_obs_.size(0), device=replay_obs_.device).unsqueeze(1)
+                        replay_obs_ = torch.where(
+                            (t_ <= last_zero.unsqueeze(0)).unsqueeze(2),
+                            replay_obs_[first_non_zero_, torch.arange(replay_obs_.size(1), device=replay_obs_.device)].unsqueeze(0),
+                            replay_obs_,
+                        )
+
+                    buf[:, self.reset_env_ids] = replay_obs_
+                else:
+                    curr_observation = curr_observations[agent].unsqueeze(0)
+                    buf[:, self.reset_env_ids] = curr_observation[:, self.reset_env_ids].repeat(self.cfg.history_length, 1, 1)
 
             scroll_buffer = ~self.reset_env_ids
             if scroll_buffer.any():
@@ -825,8 +885,28 @@ class SwarmVelEnv(DirectMARLEnv):
         # Scroll or reset (fill in the first frame) the state buffer
         buf = self.state_buffer
         if self.reset_env_ids.any():
-            curr_state_ = curr_state.unsqueeze(0)
-            buf[:, self.reset_env_ids] = curr_state_[:, self.reset_env_ids].repeat(self.cfg.history_length, 1, 1)
+            if self.experience_replayed and self.experience_replay_states is not None:
+                # Use the experience replay states to initialize the state buffer
+                replay_states_ = (
+                    self.experience_replay_states[..., :16].permute(1, 0, 2, 3).contiguous().flatten(start_dim=2)
+                )  # [history_length, num_envs_to_reset, state_size * num_agents]
+
+                # Fill the all zero frames with the last non-zero frame
+                mask_zero_ = replay_states_.abs().sum(-1) == 0  # [history_length, num_envs_to_reset]
+                if mask_zero_.any():
+                    first_non_zero_ = (~mask_zero_).int().argmax(dim=0)  # [num_envs_to_reset]
+                    last_zero = first_non_zero_ - 1
+                    t_ = torch.arange(replay_states_.size(0), device=replay_states_.device).unsqueeze(1)
+                    replay_states_ = torch.where(
+                        (t_ <= last_zero.unsqueeze(0)).unsqueeze(2),
+                        replay_states_[first_non_zero_, torch.arange(replay_states_.size(1), device=replay_states_.device)].unsqueeze(0),
+                        replay_states_,
+                    )
+
+                buf[:, self.reset_env_ids, :] = replay_states_
+            else:
+                curr_state_ = curr_state.unsqueeze(0)
+                buf[:, self.reset_env_ids] = curr_state_[:, self.reset_env_ids].repeat(self.cfg.history_length, 1, 1)
 
         scroll_buffer = ~self.reset_env_ids
         if scroll_buffer.any():

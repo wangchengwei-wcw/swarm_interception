@@ -316,11 +316,12 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
             # died_unified = torch.logical_or(died_unified, self.died[agent_i])
 
-        # if self.informed is not None and self.informed:
-        #     print(died[self.informed_ids])
-        #     print("------------------------------------")
-        #     print(collision_died[self.informed_ids])
-        #     self.informed = False
+        if self.experience_replayed is not None and self.experience_replayed:
+            # print("==== Experience Replay Debug Info ====")
+            # for idx, env_id in enumerate(self.experience_replay_ids):
+            #     print(f"Env {env_id}: " f"died={bool(died[env_id])}, collision_died={bool(collision_died[env_id])}")
+            # print("======================================")
+            self.experience_replayed = False
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -335,15 +336,17 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             all_states.append(state_with_goal)
         all_states_tensor = torch.stack(all_states, dim=1)  # [num_envs, num_agents, 17]
         self.history_state_buffer.append(all_states_tensor)
-        if len(self.history_state_buffer) > self.cfg.max_informed_steps:
+        if len(self.history_state_buffer) > self.cfg.max_time_before_failure * self.cfg.action_freq:
             self.history_state_buffer.pop(0)
 
         history_state_tensor = torch.stack(self.history_state_buffer, dim=0)  # [num_frames, num_envs, num_agents, state_size]
 
         mask = collision_died  # [num_envs] bool indicating which environments collided
-        if mask.any() and len(self.history_state_buffer) >= self.cfg.max_informed_steps:
+        if mask.any() and len(self.history_state_buffer) >= self.cfg.max_time_before_failure * self.cfg.action_freq:
             collided_envs = torch.nonzero(mask, as_tuple=True)[0]
-            frame_indices = torch.randint(0, len(self.history_state_buffer) - self.cfg.min_informed_steps, size=(collided_envs.shape[0],))
+            frame_indices = torch.randint(
+                0, len(self.history_state_buffer) - int(self.cfg.min_time_before_failure * self.cfg.action_freq), size=(collided_envs.shape[0],)
+            )
             failure_states = history_state_tensor[frame_indices, collided_envs]
 
             non_empty_failure_states = failure_states[~torch.all(failure_states == 0, dim=(1, 2))]
@@ -576,13 +579,12 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     logger.warning(f"The search for goal positions of the swarm meeting constraints within a side-length {rg} box failed, using the final sample #_#")
                     goal_p[idx] = last_rand_pts
 
-        self.informed = self.cfg.enable_informed_reset and random.random() < self.cfg.informed_reset_prob and len(self.failure_buffer) > 0
-        if self.informed:
-            # Informed reset: set initial state and goal based on a randomly chosen state from the failure buffer
-            informed_states = torch.stack([random.choice(self.failure_buffer) for _ in env_ids])
-            self.informed_ids = env_ids
-        else:
-            informed_states = None
+        self.experience_replayed = self.cfg.enable_experience_replay and random.random() < self.cfg.experience_replay_prob and len(self.failure_buffer) > 0
+        experience_replay_states = None
+        if self.experience_replayed:
+            # experience replay: set initial state and goal based on a randomly chosen state from the failure buffer
+            experience_replay_states = torch.stack([random.choice(self.failure_buffer) for _ in env_ids])
+            self.experience_replay_ids = env_ids
 
         for i, agent in enumerate(self.possible_agents):
             init_state = self.robots[agent].data.default_root_state.clone()
@@ -617,11 +619,11 @@ class SwarmBodyrateEnv(DirectMARLEnv):
             self.goals[agent][env_ids, 2] = float(self.cfg.flight_altitude)
             self.goals[agent][env_ids] += self.terrain.env_origins[env_ids]
 
-            if informed_states is not None:
-                init_state[env_ids, :13] = (informed_states[:, i, :13]).clone()
-                init_state[env_ids, :3] = informed_states[:, i, :3] + self.terrain.env_origins[env_ids]
-                self.goals[agent][env_ids] = informed_states[:, i, 13:16] + self.terrain.env_origins[env_ids]
-                self.xy_boundary[env_ids] = (informed_states[:, i, 16]).clone()
+            if experience_replay_states is not None:
+                init_state[env_ids, :13] = (experience_replay_states[:, i, :13]).clone()
+                init_state[env_ids, :3] = experience_replay_states[:, i, :3] + self.terrain.env_origins[env_ids]
+                self.goals[agent][env_ids] = experience_replay_states[:, i, 13:16] + self.terrain.env_origins[env_ids]
+                self.xy_boundary[env_ids] = (experience_replay_states[:, i, 16]).clone()
 
             self.robots[agent].write_root_pose_to_sim(init_state[env_ids, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(init_state[env_ids, 7:], env_ids)
