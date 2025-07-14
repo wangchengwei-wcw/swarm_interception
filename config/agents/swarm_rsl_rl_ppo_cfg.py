@@ -80,8 +80,8 @@ class SwarmBodyratePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = True
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[1024, 1024, 1024, 512, 512, 512, 256],
-        critic_hidden_dims=[1024, 1024, 1024, 512, 512, 512, 256],
+        actor_hidden_dims=[2048, 2048, 2048, 1024, 1024, 1024, 512],
+        critic_hidden_dims=[2048, 2048, 2048, 1024, 1024, 1024, 512],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(
