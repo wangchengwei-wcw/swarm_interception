@@ -40,7 +40,7 @@ class SwarmVelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 @configclass
 class SwarmAccPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 350
+    num_steps_per_env = 50
     max_iterations = 1000
     save_interval = 20
     experiment_name = ""
@@ -48,8 +48,6 @@ class SwarmAccPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = True
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        # actor_hidden_dims=[2048, 2048, 2048, 1024, 1024, 512],
-        # critic_hidden_dims=[2048, 2048, 2048, 1024, 1024, 512],
         actor_hidden_dims=[1024, 1024, 1024, 512, 512, 256],
         critic_hidden_dims=[1024, 1024, 1024, 512, 512, 256],
         activation="elu",

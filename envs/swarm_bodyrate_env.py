@@ -90,7 +90,10 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
     transient_state_dim = 16 * num_drones
     state_space = None
 
+    # Domain randomization
     enable_domain_randomization = False
+
+    # Informed reset
     enable_informed_reset = False
     informed_reset_prob = 0.9
     min_informed_steps = 20
@@ -103,7 +106,7 @@ class SwarmBodyrateEnvCfg(DirectMARLEnvCfg):
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.state_space = self.history_length * self.transient_state_dim
         self.v_desired = {agent: 2.0 for agent in self.possible_agents}
-        self.v_max = {agent: 2.0 for agent in self.possible_agents}
+        self.v_max = {agent: 3.0 for agent in self.possible_agents}
         self.thrust_to_weight = {agent: 3.0 for agent in self.possible_agents}
         self.w_max = {agent: 10.0 for agent in self.possible_agents}
 
@@ -286,7 +289,7 @@ class SwarmBodyrateEnv(DirectMARLEnv):
 
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < -0.1, self.robots[agent].data.root_link_pos_w[:, 2] > 6.0)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
-            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
+            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
             x_exceed_bounds = torch.logical_or(
                 self.robots[agent].data.root_link_pos_w[:, 0] - self.terrain.env_origins[:, 0] < -self.xy_boundary,
@@ -307,23 +310,17 @@ class SwarmBodyrateEnv(DirectMARLEnv):
                     continue
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
-                # collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
-                # collision_died = torch.logical_or(collision_died, collision)
-                # died = torch.logical_or(died, collision)
+            #     collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
+            #     collision_died = torch.logical_or(collision_died, collision)
+            #     self.died[agent_i] = torch.logical_or(self.died[agent_i], collision)
+
+            # died_unified = torch.logical_or(died_unified, self.died[agent_i])
 
         # if self.informed is not None and self.informed:
         #     print(died[self.informed_ids])
         #     print("------------------------------------")
         #     print(collision_died[self.informed_ids])
         #     self.informed = False
-
-        # TODO: Test
-        # success = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
-        # for agent in self.possible_agents:
-        #     dist_to_goal = torch.linalg.norm(self.goals[agent] - self.robots[agent].data.root_pos_w, dim=1)
-        #     success = torch.logical_and(success, dist_to_goal < self.success_dist_thr)
-
-        # died = torch.logical_or(died, success)
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 

@@ -31,19 +31,19 @@ from utils.controller import Controller
 @configclass
 class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # Change viewer settings
-    viewer = ViewerCfg(eye=(3.0, -3.0, 40.0))
+    viewer = ViewerCfg(eye=(3.0, -3.0, 60.0))
 
     # Reward weights
-    to_live_reward_weight = 0.0  # 《活着》
-    death_penalty_weight = 0.1
+    to_live_reward_weight = 10.0  # 《活着》
+    death_penalty_weight = 1.0
     approaching_goal_reward_weight = 5.0
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 0.1
+    mutual_collision_avoidance_reward_weight = 10.0
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.001
+    action_diff_penalty_weight = 0.05
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
@@ -59,35 +59,35 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     migration_goal_range = 5.0  # Range of xy coordinates of the goal in mission "migration"
-    chaotic_goal_range = 3.5  # Range of xy coordinates of the goal in mission "chaotic"
+    chaotic_goal_range = 2.5  # Range of xy coordinates of the goal in mission "chaotic"
     birth_circle_radius = 2.7
 
     # TODO: Improve dirty curriculum
-    enable_dirty_curriculum = False
-    curriculum_steps = 300 * 350
-    init_death_penalty_weight = 0.01
-    init_mutual_collision_avoidance_reward_weight = 0.01
-    init_action_diff_penalty_weight = 0.0
+    enable_dirty_curriculum = True
+    curriculum_steps = 1e5
+    init_death_penalty_weight = 0.1
+    init_mutual_collision_avoidance_reward_weight = 1.0
+    init_action_diff_penalty_weight = 0.001
 
     # Env
     episode_length_s = 20.0
     physics_freq = 200.0
     control_freq = 100.0
-    action_freq = 10.0
+    action_freq = 5.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
-    num_drones = 4  # Number of drones per environment
+    num_drones = 5  # Number of drones per environment
     decimation = math.ceil(physics_freq / action_freq)  # Environment decimation
     render_decimation = physics_freq // gui_render_freq
     clip_action = 1.0
     possible_agents = None
     action_spaces = None
-    history_length = 10
+    history_length = 1
     # transient_observasion_dim = 6 + 2 * (num_drones - 1)
     transient_observasion_dim = 8
     observation_spaces = None
     transient_state_dim = 16 * num_drones
-    state_space = None
+    state_space = history_length * transient_state_dim
 
     # Domain randomization
     enable_domain_randomization = False
@@ -103,9 +103,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
-        self.state_space = self.history_length * self.transient_state_dim
-        self.a_max = {agent: 13.0 for agent in self.possible_agents}
-        self.v_max = {agent: 2.0 for agent in self.possible_agents}
+        self.a_max = {agent: 25.0 for agent in self.possible_agents}
+        self.v_max = {agent: 4.0 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -271,16 +270,17 @@ class SwarmAccEnv(DirectMARLEnv):
             clip_scale = torch.clamp(norm_xy / self.cfg.a_max[agent], min=1.0)
             self.a_desired[agent][:, :2] = a_xy_desired / clip_scale
 
+    def _apply_action(self) -> None:
+        for agent in self.possible_agents:
             self.p_desired[agent][:, :2] = (
-                self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.step_dt + 0.5 * self.a_desired[agent][:, :2] * self.step_dt**2
+                self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.physics_dt + 0.5 * self.a_desired[agent][:, :2] * self.physics_dt**2
             )
 
-            self.v_desired[agent][:, :2] += self.a_desired[agent][:, :2] * self.step_dt
+            self.v_desired[agent][:, :2] += self.a_desired[agent][:, :2] * self.physics_dt
             speed_xy = torch.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
             clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
             self.v_desired[agent][:, :2] /= clip_scale
 
-    def _apply_action(self) -> None:
         if self.control_counter % self.cfg.control_decimation == 0:
             start = time.perf_counter()
             for agent in self.possible_agents:
@@ -327,7 +327,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
             z_exceed_bounds = torch.logical_or(self.robots[agent].data.root_link_pos_w[:, 2] < 0.9, self.robots[agent].data.root_link_pos_w[:, 2] > 1.1)
             ang_between_z_body_and_z_world = torch.rad2deg(quat_to_ang_between_z_body_and_z_world(self.robots[agent].data.root_link_quat_w))
-            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 60.0)
+            self.died[agent] = torch.logical_or(z_exceed_bounds, ang_between_z_body_and_z_world > 80.0)
 
             x_exceed_bounds = torch.logical_or(
                 self.robots[agent].data.root_link_pos_w[:, 0] - self.terrain.env_origins[:, 0] < -self.xy_boundary,
@@ -348,11 +348,11 @@ class SwarmAccEnv(DirectMARLEnv):
                     continue
                 self.relative_positions_w[i][j] = self.robots[agent_j].data.root_pos_w - self.robots[agent_i].data.root_pos_w
 
-                collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
-                collision_died = torch.logical_or(collision_died, collision)
-                self.died[agent_i] = torch.logical_or(self.died[agent_i], collision)
+            #     collision = torch.linalg.norm(self.relative_positions_w[i][j], dim=1) < self.cfg.collide_dist
+            #     collision_died = torch.logical_or(collision_died, collision)
+            #     self.died[agent_i] = torch.logical_or(self.died[agent_i], collision)
 
-            died_unified = torch.logical_or(died_unified, self.died[agent_i])
+            # died_unified = torch.logical_or(died_unified, self.died[agent_i])
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -426,6 +426,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
                 dist_btw_drones = torch.linalg.norm(self.relative_positions_w[i][j], dim=1)
 
+                # collision_penalty = 1.0 / (1.0 + torch.exp(52.0 * (dist_btw_drones - self.cfg.safe_dist)))
                 collision_penalty = torch.where(
                     dist_btw_drones < self.cfg.safe_dist,
                     torch.exp(self.cfg.mutual_collision_avoidance_reward_scale * (self.cfg.safe_dist - dist_btw_drones)) - 1.0,
@@ -557,7 +558,7 @@ class SwarmAccEnv(DirectMARLEnv):
                     self.ang[idx] = last_rand_ang
 
         if len(mission_2_ids) > 0:
-            rg_min, rg_max = self.cfg.chaotic_goal_range, 1.3 * self.cfg.chaotic_goal_range
+            rg_min, rg_max = self.cfg.chaotic_goal_range, 1.5 * self.cfg.chaotic_goal_range
             self.rand_rg[mission_2_ids] = torch.rand(len(mission_2_ids), device=self.device) * (rg_max - rg_min) + rg_min
             init_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
             goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
