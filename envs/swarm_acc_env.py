@@ -40,10 +40,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 15.0
     time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 15.0
+    mutual_collision_avoidance_reward_weight = 1.0
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.1
+    action_diff_penalty_weight = 0.01
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
@@ -363,17 +363,17 @@ class SwarmAccEnv(DirectMARLEnv):
         all_agent_states = []
         for agent in self.possible_agents:
             body2goal_w = self.goals[agent] - self.robots[agent].data.root_pos_w
-            xy_boundary = self.xy_boundary.clone().unsqueeze(-1)
             curr_state = torch.cat(
                 [
                     self.robots[agent].data.root_pos_w - self.terrain.env_origins,
                     body2goal_w,
                     self.robots[agent].data.root_quat_w.clone(),
                     self.robots[agent].data.root_vel_w.clone(),
-                    xy_boundary,
                 ],
                 dim=-1,
-            )  # [num_envs, 17]
+            )  # [num_envs, 16]
+            xy_boundary = self.xy_boundary.clone().unsqueeze(-1)
+            range = self.rand_rg.clone().unsqueeze(-1)
             curr_obs = torch.cat(
                 [
                     self.a_xy_desired_normalized[agent].clone(),
@@ -383,9 +383,9 @@ class SwarmAccEnv(DirectMARLEnv):
                 ],
                 dim=-1,
             )  # [num_envs, 8]
-            all_agent_states.append(torch.cat([curr_state, curr_obs], dim=-1))  # [num_envs, 25]
+            all_agent_states.append(torch.cat([curr_state, xy_boundary, range, curr_obs], dim=-1))  # [num_envs, 26]
 
-        self.experience_state_buffer.append(torch.stack(all_agent_states, dim=1))  # [num_envs, num_agents, 25]
+        self.experience_state_buffer.append(torch.stack(all_agent_states, dim=1))  # [num_envs, num_agents, 26]
         if len(self.experience_state_buffer) > self.cfg.max_experience_state_buffer_size:
             self.experience_state_buffer.pop(0)
 
@@ -665,12 +665,13 @@ class SwarmAccEnv(DirectMARLEnv):
 
             if self.experience_replay_states is not None:
                 # Select the last frame of the experience replay state to initialize the robot state
-                state_ = self.experience_replay_states[:, -1, i, :17].clone()  # [num_envs_to_reset, 17]
-                root_pos_w_ = state_[:, 0:3] + self.terrain.env_origins[env_ids]
+                states_ = self.experience_replay_states[:, -1, i, :18].clone()  # [num_envs_to_reset, 18]
+                root_pos_w_ = states_[:, 0:3] + self.terrain.env_origins[env_ids]
                 init_state[env_ids, 0:3] = root_pos_w_
-                init_state[env_ids, 3:13] = state_[:, 6:16]  # Quats, lin_vels, ang_vels
-                self.goals[agent][env_ids] = root_pos_w_ + state_[:, 3:6]  # Goals
-                self.xy_boundary[env_ids] = state_[:, 16]
+                init_state[env_ids, 3:13] = states_[:, 6:16]  # Quats, lin_vels, ang_vels
+                self.goals[agent][env_ids] = root_pos_w_ + states_[:, 3:6]  # Goals
+                self.xy_boundary[env_ids] = states_[:, 16]
+                self.rand_rg[env_ids] = states_[:, 17]
 
             self.robots[agent].write_root_pose_to_sim(init_state[env_ids, :7], env_ids)
             self.robots[agent].write_root_velocity_to_sim(init_state[env_ids, 7:], env_ids)
@@ -752,7 +753,6 @@ class SwarmAccEnv(DirectMARLEnv):
                     goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
                     for i_, agent_ in enumerate(self.possible_agents):
                         goal_p[mission_2_ids, i_] = self.goals[agent_][mission_2_ids, :2].clone()
-                        # goal_p[mission_2_ids, i_] = self.goals[agent_][mission_2_ids, :2]
 
                     for idx in mission_2_ids.tolist():
                         rg = self.rand_rg[idx]
@@ -850,7 +850,7 @@ class SwarmAccEnv(DirectMARLEnv):
             if self.reset_env_ids.any():
                 if self.experience_replayed and self.experience_replay_states is not None:
                     # Use the experience replay states to initialize the observation buffer
-                    replay_obs_ = self.experience_replay_states[:, :, i, 17:].permute(1, 0, 2).contiguous()  # [history_length, num_envs_to_reset, obs_dim]
+                    replay_obs_ = self.experience_replay_states[:, :, i, 18:].permute(1, 0, 2).contiguous()  # [history_length, num_envs_to_reset, obs_dim]
 
                     # Fill the all zero frames with the last non-zero frame
                     mask_zero_ = replay_obs_.abs().sum(-1) == 0  # [history_length, num_envs_to_reset]
