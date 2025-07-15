@@ -73,7 +73,7 @@ class SwarmVelEnvCfg(DirectMARLEnvCfg):
     episode_length_s = 20.0
     physics_freq = 200.0
     control_freq = 100.0
-    action_freq = 5.0
+    action_freq = 50.0
     gui_render_freq = 50.0
     control_decimation = physics_freq // control_freq
     num_drones = 5  # Number of drones per environment
@@ -270,40 +270,43 @@ class SwarmVelEnv(DirectMARLEnv):
             speed_xy = torch.norm(v_xy_desired, dim=1, keepdim=True)
             clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
             self.v_desired[agent][:, :2] = v_xy_desired / clip_scale
-            self.p_desired[agent][:, :2] = self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.step_dt
+            # self.p_desired[agent][:, :2] = self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.step_dt
 
     def _apply_action(self) -> None:
-        if self.control_counter % self.cfg.control_decimation == 0:
-            start = time.perf_counter()
-            for agent in self.possible_agents:
-                state_desired = torch.cat(
-                    (
-                        self.p_desired[agent],
-                        self.v_desired[agent],
-                        self.a_desired[agent],
-                        self.j_desired[agent],
-                        self.yaw_desired[agent],
-                        self.yaw_dot_desired[agent],
-                    ),
-                    dim=1,
-                )
+        # if self.control_counter % self.cfg.control_decimation == 0:
+        #     start = time.perf_counter()
+        #     for agent in self.possible_agents:
+        #         state_desired = torch.cat(
+        #             (
+        #                 self.p_desired[agent],
+        #                 self.v_desired[agent],
+        #                 self.a_desired[agent],
+        #                 self.j_desired[agent],
+        #                 self.yaw_desired[agent],
+        #                 self.yaw_dot_desired[agent],
+        #             ),
+        #             dim=1,
+        #         )
 
-                self.a_desired_total[agent], self.thrust_desired[agent], self.q_desired[agent], self.w_desired[agent], self.m_desired[agent] = self.controllers[
-                    agent
-                ].get_control(self.robots[agent].data.root_state_w, state_desired)
+        #         self.a_desired_total[agent], self.thrust_desired[agent], self.q_desired[agent], self.w_desired[agent], self.m_desired[agent] = self.controllers[
+        #             agent
+        #         ].get_control(self.robots[agent].data.root_state_w, state_desired)
 
-                self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
+        #         self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
 
-            end = time.perf_counter()
-            logger.debug(f"get_control for all drones takes {end - start:.5f}s")
+        #     end = time.perf_counter()
+        #     logger.debug(f"get_control for all drones takes {end - start:.5f}s")
 
-            self._publish_debug_signals()
+        #     self._publish_debug_signals()
 
-            self.control_counter = 0
-        self.control_counter += 1
+        #     self.control_counter = 0
+        # self.control_counter += 1
+
+        # for agent in self.possible_agents:
+        #     self.robots[agent].set_external_force_and_torque(self._thrust_desired[agent].unsqueeze(1), self.m_desired[agent].unsqueeze(1), body_ids=self.body_ids[agent])
 
         for agent in self.possible_agents:
-            self.robots[agent].set_external_force_and_torque(self._thrust_desired[agent].unsqueeze(1), self.m_desired[agent].unsqueeze(1), body_ids=self.body_ids[agent])
+            self.robots[agent].write_root_velocity_to_sim(torch.cat((self.v_desired[agent], torch.zeros_like(self.v_desired[agent])), dim=1))
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died_unified = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)

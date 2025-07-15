@@ -40,10 +40,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     dist_to_goal_reward_weight = 0.0
     success_reward_weight = 15.0
     time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 1.0
+    mutual_collision_avoidance_reward_weight = 15.0
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.01
+    action_diff_penalty_weight = 0.1
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
@@ -59,15 +59,15 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     migration_goal_range = 5.0  # Range of xy coordinates of the goal in mission "migration"
-    chaotic_goal_range = 3.0  # Range of xy coordinates of the goal in mission "chaotic"
+    chaotic_goal_range = 4.0  # Range of xy coordinates of the goal in mission "chaotic"
     birth_circle_radius = 2.7
 
     # TODO: Improve dirty curriculum
-    enable_dirty_curriculum = False
-    curriculum_steps = 1e5
+    enable_dirty_curriculum = True
+    curriculum_steps = 2e5
     init_death_penalty_weight = 1.0
     init_mutual_collision_avoidance_reward_weight = 1.0
-    init_action_diff_penalty_weight = 0.001
+    init_action_diff_penalty_weight = 0.01
 
     # Env
     episode_length_s = 20.0
@@ -586,7 +586,7 @@ class SwarmAccEnv(DirectMARLEnv):
                     self.ang[idx] = last_rand_ang
 
         if len(mission_2_ids) > 0:
-            rg_min, rg_max = self.cfg.chaotic_goal_range, 1.5 * self.cfg.chaotic_goal_range
+            rg_min, rg_max = self.cfg.chaotic_goal_range, 1.01 * self.cfg.chaotic_goal_range
             self.rand_rg[mission_2_ids] = torch.rand(len(mission_2_ids), device=self.device) * (rg_max - rg_min) + rg_min
             init_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
             goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
