@@ -354,7 +354,7 @@ class SwarmVelEnv(DirectMARLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
         all_agent_states = []
-        for agent in self.possible_agents:
+        for i, agent in enumerate(self.possible_agents):
             body2goal_w = self.goals[agent] - self.robots[agent].data.root_pos_w
             curr_state = torch.cat(
                 [
@@ -365,18 +365,18 @@ class SwarmVelEnv(DirectMARLEnv):
                 ],
                 dim=-1,
             )  # [num_envs, 16]
-            
+
             xy_boundary = self.xy_boundary.clone().unsqueeze(-1)
             range = self.rand_rg.clone().unsqueeze(-1)
-            
+
             relative_positions_with_observability = []
-            for j, agent_j in enumerate(self.possible_agents):
+            for j, _ in enumerate(self.possible_agents):
                 if i == j:
                     continue
 
                 relative_positions_with_observability.append(self.relative_positions_w[i][j][:, :2].clone())
             relative_positions_with_observability = torch.cat(relative_positions_with_observability, dim=-1)
-            
+
             curr_obs = torch.cat(
                 [
                     self.v_xy_desired_normalized[agent].clone(),
@@ -435,7 +435,8 @@ class SwarmVelEnv(DirectMARLEnv):
                 self.cfg.death_penalty_weight = self.cfg.init_death_penalty_weight
                 self.delta_death_penalty_weight = (self.final_death_penalty_weight - self.cfg.init_death_penalty_weight) / self.cfg.curriculum_steps
             else:
-                self.cfg.death_penalty_weight += self.delta_death_penalty_weight
+                if self.cfg.death_penalty_weight < self.final_death_penalty_weight:
+                    self.cfg.death_penalty_weight += self.delta_death_penalty_weight
 
             if not hasattr(self, "delta_mutual_collision_avoidance_reward_weight"):
                 self.final_mutual_collision_avoidance_reward_weight = self.cfg.mutual_collision_avoidance_reward_weight
@@ -444,14 +445,16 @@ class SwarmVelEnv(DirectMARLEnv):
                     self.final_mutual_collision_avoidance_reward_weight - self.cfg.init_mutual_collision_avoidance_reward_weight
                 ) / self.cfg.curriculum_steps
             else:
-                self.cfg.mutual_collision_avoidance_reward_weight += self.delta_mutual_collision_avoidance_reward_weight
+                if self.cfg.mutual_collision_avoidance_reward_weight < self.final_mutual_collision_avoidance_reward_weight:
+                    self.cfg.mutual_collision_avoidance_reward_weight += self.delta_mutual_collision_avoidance_reward_weight
 
             if not hasattr(self, "delta_action_diff_penalty_weight"):
                 self.final_action_diff_penalty_weight = self.cfg.action_diff_penalty_weight
                 self.cfg.action_diff_penalty_weight = self.cfg.init_action_diff_penalty_weight
                 self.delta_action_diff_penalty_weight = (self.final_action_diff_penalty_weight - self.cfg.init_action_diff_penalty_weight) / self.cfg.curriculum_steps
             else:
-                self.cfg.action_diff_penalty_weight += self.delta_action_diff_penalty_weight
+                if self.cfg.action_diff_penalty_weight < self.final_action_diff_penalty_weight:
+                    self.cfg.action_diff_penalty_weight += self.delta_action_diff_penalty_weight
 
         rewards = {}
 
