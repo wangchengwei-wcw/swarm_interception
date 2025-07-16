@@ -10,11 +10,11 @@ models:
     clip_actions: False
     clip_log_std: True
     # min_log_std: -0.9  # std = 0.4
-    min_log_std: -1.2  # std = 0.3
+    # min_log_std: -1.2  # std = 0.3
     # min_log_std: -1.4  # std = 0.25
-    # min_log_std: -1.6  # std = 0.2
+    min_log_std: -1.6  # std = 0.2
     max_log_std: 2.0
-    initial_log_std: -0.3  # std = 0.75
+    initial_log_std: 0.0
     network:
       - name: net
         input: STATES
@@ -45,11 +45,12 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/multi_agents/ippo.html
 agent:
   class: IPPO
-  # shared_parameters: True
+  shared_parameters: True
   # rollouts: 100  # 10 steps/sec for waypoint envs
-  rollouts: 150  # 50 steps/sec for bodyrate envs
+  # rollouts: 150  # 50 steps/sec for bodyrate envs
+  rollouts: 80  # 10 steps/sec for ideal velocity envs
   learning_epochs: 4
-  mini_batches: 4
+  mini_batches: 5
   discount_factor: 0.99
   lambda: 0.95
   learning_rate: 1.0e-04
@@ -68,7 +69,7 @@ agent:
   ratio_clip: 0.2
   value_clip: 0.2
   clip_predicted_values: True
-  entropy_loss_scale: 0.001
+  entropy_loss_scale: 0.0005
   value_loss_scale: 1.0
   kl_threshold: 0.0
   rewards_shaper_scale: 1.0
