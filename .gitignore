@@ -43,3 +43,14 @@ docker/artifacts/
 **/generated/*
 
 .env
+
+# 1) Ignore everything under outputs
+/outputs/**
+
+# 2) But allow Git to recurse into level‑1 and level‑2 subdirectories
+!/outputs/*/
+!/outputs/*/*/
+
+# 3) Finally, unignore any “milestone” directory at outputs/*/*/milestone and all its contents
+!/outputs/*/*/milestone/
+!/outputs/*/*/milestone/**

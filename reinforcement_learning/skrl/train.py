@@ -151,7 +151,9 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
 
     # Dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
+    os.chmod(os.path.join(log_dir, "params", "env.yaml"), 0o444)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    os.chmod(os.path.join(log_dir, "params", "agent.yaml"), 0o444)
 
     env_dir = os.path.join(os.path.dirname(__file__), "../../", "envs")
     dump_env_src_dir = os.path.join(log_dir, "src")
@@ -173,6 +175,7 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     elif args_cli.task == "FAST-Swarm-Waypoint":
         env_src_file = "swarm_waypoint_env.py"
     shutil.copy2(os.path.join(env_dir, env_src_file), os.path.join(dump_env_src_dir, env_src_file))
+    os.chmod(os.path.join(dump_env_src_dir, env_src_file), 0o444)
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
