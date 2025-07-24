@@ -63,7 +63,8 @@ class QuadcopterVelEnvCfg(DirectRLEnvCfg):
     action_space = 2
     clip_action = 1.0
 
-    v_max = 2.0
+    v_max = 4.0
+    a_max = 10.0
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -176,14 +177,44 @@ class QuadcopterVelEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        self.v_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
-        self.v_desired[:, :2] = self.v_xy_desired_normalized * self.cfg.v_max
-        self.p_desired[:, :2] = self.robot.data.root_pos_w[:, :2] + self.v_desired[:, :2] * self.step_dt
-        # self.p_desired[:, :2] += self.v_desired[:, :2] * self.step_dt
+        # self.v_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+        # self.v_desired[:, :2] = self.v_xy_desired_normalized * self.cfg.v_max
+        # self.p_desired[:, :2] = self.robot.data.root_pos_w[:, :2] + self.v_desired[:, :2] * self.step_dt
+        # # self.p_desired[:, :2] += self.v_desired[:, :2] * self.step_dt
+
+        self.a_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+        a_xy_desired = self.a_xy_desired_normalized * self.cfg.a_max
+        norm_xy = torch.norm(a_xy_desired, dim=1, keepdim=True)
+        clip_scale = torch.clamp(norm_xy / self.cfg.a_max, min=1.0)
+        self.a_desired[:, :2] = a_xy_desired / clip_scale
 
     def _apply_action(self):
+
+        self.prev_v_desired = self.v_desired.clone()
+        self.v_desired[:, :2] += self.a_desired[:, :2] * self.physics_dt
+        speed_xy = torch.norm(self.v_desired[:, :2], dim=1, keepdim=True)
+        clip_scale = torch.clamp(speed_xy / self.cfg.v_max, min=1.0)
+        self.v_desired[:, :2] /= clip_scale
+
+        self.a_after_v_clip = (self.v_desired - self.prev_v_desired) / self.physics_dt
+        self.p_desired[:, :2] += (
+            self.prev_v_desired[:, :2] * self.physics_dt + 0.5 * self.a_after_v_clip[:, :2] * self.physics_dt**2
+        )
+
         if self.control_counter % self.cfg.control_decimation == 0:
-            state_desired = torch.cat((self.p_desired, self.v_desired, self.a_desired, self.j_desired, self.yaw_desired, self.yaw_dot_desired), dim=1)
+
+            state_desired = torch.cat(
+                (
+                    self.p_desired,
+                    self.v_desired,
+                    # self.a_desired,
+                    self.a_after_v_clip,
+                    self.j_desired,
+                    self.yaw_desired,
+                    self.yaw_dot_desired
+                ),
+                dim=1
+            )
 
             self.a_desired_total, self.thrust_desired, self.q_desired, self.w_desired, self.m_desired = self.controller.get_control(
                 self.robot.data.root_state_w, state_desired

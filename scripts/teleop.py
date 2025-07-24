@@ -13,10 +13,10 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint; FAST-Quadcopter-Vel; FAST-RGB-Waypoint; FAST-Depth-Waypoint.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint; FAST-Quadcopter-Vel; FAST-Quadcopter-Acc; FAST-RGB-Waypoint; FAST-Depth-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--velocity", type=float, default=5.0, help="Velocity of teleoperation.")
+parser.add_argument("--velocity", type=float, default=4.0, help="Velocity of teleoperation.")
 parser.add_argument(
     "--verbosity", type=str, default="INFO", choices=["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"], help="Verbosity level of the custom logger."
 )
@@ -50,7 +50,7 @@ import numpy as np
 import rclpy
 import torch
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_vel_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_waypoint_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_vel_env, quadcopter_acc_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_waypoint_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate
@@ -150,6 +150,21 @@ def main():
                         actions[:, 3 * i : 3 * (i + 1)] = goal_in_body_frame / env_cfg.num_pieces / env_cfg.p_max * env_cfg.clip_action
 
             elif args_cli.task.endswith("Vel"):
+                actions = torch.zeros(env_cfg.action_space, device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1)
+                if delta_pose[0] > 0:
+                    actions[:, 0] = args_cli.velocity
+                elif delta_pose[0] < 0:
+                    actions[:, 0] = -args_cli.velocity
+                if delta_pose[1] > 0:
+                    actions[:, 1] = args_cli.velocity
+                elif delta_pose[1] < 0:
+                    actions[:, 1] = -args_cli.velocity
+
+                speed = torch.norm(actions, dim=1, keepdim=True)
+                clip_scale = torch.where(speed > env_cfg.v_max, env_cfg.v_max / (speed + 1e-6), torch.ones_like(speed))
+                actions *= clip_scale
+
+            elif args_cli.task.endswith("Acc"):
                 actions = torch.zeros(env_cfg.action_space, device=env.unwrapped.device).repeat(env.unwrapped.num_envs, 1)
                 if delta_pose[0] > 0:
                     actions[:, 0] = args_cli.velocity
