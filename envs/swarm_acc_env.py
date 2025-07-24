@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import gymnasium as gym
-import copy
 import math
 import random
-import time
 import torch
 from collections.abc import Sequence
 from loguru import logger
@@ -42,15 +40,15 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
     # mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    mutual_collision_avoidance_reward_weight = 25.0  # Stage 2
+    mutual_collision_avoidance_reward_weight = 20.0  # Stage 2
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_diff_penalty_weight = 0.1
 
     # Exponential decay factors and tolerances
     dist_to_goal_scale = 0.5
-    # mutual_collision_avoidance_reward_scale = 1.0  # Correspond to safe_dist of 1.3, collide_dist of 0.6
-    mutual_collision_avoidance_reward_scale = 0.77  # Correspond to safe_dist of 1.5, collide_dist of 0.6
+    mutual_collision_avoidance_reward_scale = 1.0  # Correspond to safe_dist of 1.5, collide_dist of 0.6
+    # mutual_collision_avoidance_reward_scale = 0.77  # Correspond to safe_dist of 1.5, collide_dist of 0.6
     # mutual_collision_avoidance_reward_scale = 0.5  # Correspond to safe_dist of 3.0, collide_dist of 0.6
     max_lin_vel_penalty_scale = 2.0
 
@@ -87,7 +85,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     enable_domain_randomization = False
 
     # Experience replay
-    enable_experience_replay = True
+    enable_experience_replay = False
     collision_experience_replay_prob = 0.77
     max_collision_experience_buffer_size = 520
     min_recording_time_before_collision = 0.4
@@ -101,8 +99,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
         self.possible_agents = [f"drone_{i}" for i in range(self.num_drones)]
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
-        self.a_max = {agent: 10.0 for agent in self.possible_agents}
-        self.v_max = {agent: 4.0 for agent in self.possible_agents}
+        self.a_max = {agent: 8.0 for agent in self.possible_agents}
+        self.v_max = {agent: 3.0 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -550,7 +548,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
         # Randomly assign missions to reset envs
         self.env_mission_ids[env_ids] = torch.randint(0, len(self.cfg.mission_names), (len(env_ids),), device=self.device)
-        self.env_mission_ids[env_ids] = 1
+        self.env_mission_ids[env_ids] = 2
         mission_0_ids = env_ids[self.env_mission_ids[env_ids] == 0]  # The migration mission
         mission_1_ids = env_ids[self.env_mission_ids[env_ids] == 1]  # The crossover mission
         mission_2_ids = env_ids[self.env_mission_ids[env_ids] == 2]  # The chaotic mission
