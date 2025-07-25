@@ -52,7 +52,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     # mutual_collision_avoidance_reward_scale = 0.5  # Correspond to safe_dist of 3.0, collide_dist of 0.6
     max_lin_vel_penalty_scale = 2.0
 
-    flight_range = 6.0
+    fix_range = False
+    flight_range = 5.0
     flight_altitude = 1.0  # Desired flight altitude
     safe_dist = 1.5
     collide_dist = 0.6
@@ -139,7 +140,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     debug_vis = True
     debug_vis_goal = True
     debug_vis_action = True
-    debug_vis_collide_dist = True
+    debug_vis_collide_dist = False
     debug_vis_rel_pos = False
 
 
@@ -565,7 +566,10 @@ class SwarmAccEnv(DirectMARLEnv):
 
         if len(mission_1_ids) > 0:
             r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0]
-            r_min = r_max / 2.0
+            if self.cfg.fix_range:
+                r_min = r_max
+            else:
+                r_min = r_max / 1.5
             self.rand_r[mission_1_ids] = torch.rand(len(mission_1_ids), device=self.device) * (r_max - r_min) + r_min
 
             for idx in mission_1_ids.tolist():
@@ -585,7 +589,10 @@ class SwarmAccEnv(DirectMARLEnv):
 
         if len(mission_2_ids) > 0:
             rg_max = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0]
-            rg_min = rg_max / 2.0
+            if self.cfg.fix_range:
+                rg_min = rg_max
+            else:
+                rg_min = rg_max / 1.5
             self.rand_rg[mission_2_ids] = torch.rand(len(mission_2_ids), device=self.device) * (rg_max - rg_min) + rg_min
             init_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
             goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
