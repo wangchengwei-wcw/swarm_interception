@@ -63,7 +63,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
 
     # Env
-    episode_length_s = 20.0
+    episode_length_s = 30.0
     physics_freq = 200.0
     control_freq = 100.0
     action_freq = 20.0
@@ -713,7 +713,14 @@ class SwarmAccEnv(DirectMARLEnv):
             if success_i.any():
                 self.reset_goal_timer[agent][success_i] += self.step_dt
 
-            reset_goal_idx = (self.reset_goal_timer[agent] > self.cfg.goal_reset_delay).nonzero(as_tuple=False).squeeze(-1)
+            reset_goal_idx = (
+                (
+                    self.reset_goal_timer[agent]
+                    > torch.rand(self.num_envs, device=self.device) * (5 * self.cfg.goal_reset_delay - self.cfg.goal_reset_delay) + self.cfg.goal_reset_delay
+                )
+                .nonzero(as_tuple=False)
+                .squeeze(-1)
+            )
             if len(reset_goal_idx) > 0:
                 mission_0_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 0]  # The migration mission
                 mission_1_ids = reset_goal_idx[self.env_mission_ids[reset_goal_idx] == 1]  # The crossover mission
