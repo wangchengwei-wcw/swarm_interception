@@ -13,7 +13,7 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-PVAJYYd; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument(
@@ -30,8 +30,8 @@ elif args_cli.task in ["FAST-Swarm-Bodyrate", "FAST-Swarm-Waypoint"]:
     raise ValueError("Swarm envs are not supported for eight trajectory generation and tracking #^#")
 elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
-elif args_cli.task != "FAST-Quadcopter-Waypoint":
-    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint.")
+elif args_cli.task not in ["FAST-Quadcopter-PVAJYYd", "FAST-Quadcopter-Waypoint"]:
+    raise ValueError("Invalid task name #^# Please select from: FAST-Quadcopter-PVAJYYd; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint.")
 
 # Launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -50,7 +50,7 @@ import rclpy
 import time
 import torch
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_waypoint_env
+from envs import camera_waypoint_env, quadcopter_pvajyyd_env, quadcopter_waypoint_env
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.utils.math import quat_inv, quat_rotate
 from utils.minco import MinJerkOpt
@@ -63,13 +63,13 @@ def generate_eight_trajectory(p_odom, v_odom, a_odom, p_init):
     tail_pva = torch.stack([p_init, torch.zeros_like(p_init), torch.zeros_like(p_init)], dim=2)
 
     inner_pts = torch.zeros((p_odom.shape[0], 3, num_pieces - 1), device=p_odom.device)
-    inner_pts[:, :, 0] = p_init + torch.tensor([2.0, -2.0, 0.0], device=p_odom.device)
-    inner_pts[:, :, 1] = p_init + torch.tensor([2.0, 2.0, 0.0], device=p_odom.device)
+    inner_pts[:, :, 0] = p_init + torch.tensor([3.0, -3.0, 0.0], device=p_odom.device)
+    inner_pts[:, :, 1] = p_init + torch.tensor([3.0, 3.0, 0.0], device=p_odom.device)
     inner_pts[:, :, 2] = p_init + torch.tensor([0.0, 0.0, 0.0], device=p_odom.device)
-    inner_pts[:, :, 3] = p_init + torch.tensor([-2.0, -2.0, 0.0], device=p_odom.device)
-    inner_pts[:, :, 4] = p_init + torch.tensor([-2.0, 2.0, 0.0], device=p_odom.device)
+    inner_pts[:, :, 3] = p_init + torch.tensor([-3.0, -3.0, 0.0], device=p_odom.device)
+    inner_pts[:, :, 4] = p_init + torch.tensor([-3.0, 3.0, 0.0], device=p_odom.device)
 
-    durations = torch.full((p_odom.shape[0], num_pieces), 2.0, device=p_odom.device)
+    durations = torch.full((p_odom.shape[0], num_pieces), 1.5, device=p_odom.device)
 
     MJO = MinJerkOpt(head_pva, tail_pva, num_pieces)
     start = time.perf_counter()
@@ -135,7 +135,7 @@ def main():
     env.reset()
 
     traj, traj_dur, execution_time, env_reset, replan_required, traj_update_required = None, None, None, None, None, None
-    p_init, p_odom, q_odom, v_odom = None, None, None, None
+    p_init, p_odom, v_odom = None, None, None
 
     # Simulate environment
     while simulation_app.is_running():
@@ -145,7 +145,6 @@ def main():
                 obs, _, _, _, _ = env.step(torch.zeros((env.unwrapped.num_envs, env_cfg.action_space), device=env.unwrapped.device))
                 p_init = obs["odom"][:, :3].clone()
                 p_odom = obs["odom"][:, :3]
-                q_odom = obs["odom"][:, 3:7]
                 v_odom = obs["odom"][:, 7:10]
                 a_odom = torch.zeros_like(v_odom)
 
@@ -163,27 +162,40 @@ def main():
                 traj_dur[traj_update_required] = update_traj.get_total_duration()
                 execution_time[traj_update_required] = 0.0
 
-            waypoints = [
-                traj.get_pos(execution_time + i * env_cfg.duration) - traj.get_pos(execution_time + (i - 1) * env_cfg.duration)
-                / env_cfg.p_max
-                * env_cfg.clip_action
-                for i in range(1, env_cfg.num_pieces + 1)
-            ]
-            actions = torch.cat(waypoints, dim=1)
-            actions = torch.cat(
-                (
-                    actions,
-                    traj.get_vel(execution_time + env_cfg.num_pieces * env_cfg.duration) / env_cfg.v_max * env_cfg.clip_action,
-                    traj.get_acc(execution_time + env_cfg.num_pieces * env_cfg.duration) / env_cfg.a_max * env_cfg.clip_action,
-                ),
-                dim=1,
-            )
+            if args_cli.task.endswith("Waypoint"):
+                waypoints = [
+                    (traj.get_pos(execution_time + i * env_cfg.duration) - traj.get_pos(execution_time + (i - 1) * env_cfg.duration))
+                    / env_cfg.p_max
+                    * env_cfg.clip_action
+                    for i in range(1, env_cfg.num_pieces + 1)
+                ]
+                waypoints[0] = (traj.get_pos(execution_time + env_cfg.duration) - p_odom) / env_cfg.p_max * env_cfg.clip_action
+                actions = torch.cat(waypoints, dim=1)
+                actions = torch.cat(
+                    (
+                        actions,
+                        traj.get_vel(execution_time + env_cfg.num_pieces * env_cfg.duration) / env_cfg.v_max * env_cfg.clip_action,
+                        traj.get_acc(execution_time + env_cfg.num_pieces * env_cfg.duration) / env_cfg.a_max * env_cfg.clip_action,
+                    ),
+                    dim=1,
+                )
+            else:
+                actions = torch.cat(
+                    (
+                        traj.get_pos(execution_time),
+                        traj.get_vel(execution_time),
+                        traj.get_acc(execution_time),
+                        traj.get_jer(execution_time),
+                        torch.zeros_like(execution_time).unsqueeze(1),
+                        torch.zeros_like(execution_time).unsqueeze(1),
+                    ),
+                    dim=1,
+                )
 
             # Apply actions
             obs, _, reset_terminated, reset_time_outs, _ = env.step(actions)
             execution_time += env.unwrapped.step_dt
             p_odom = obs["odom"][:, :3]
-            q_odom = obs["odom"][:, 3:7]
             v_odom = obs["odom"][:, 7:10]
 
             env_reset = reset_terminated | reset_time_outs
