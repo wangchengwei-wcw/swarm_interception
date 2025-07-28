@@ -7,7 +7,7 @@ import torch
 from rclpy.node import Node
 from builtin_interfaces.msg import Time
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TwistStamped, Vector3Stamped
+from geometry_msgs.msg import AccelStamped
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -25,7 +25,7 @@ from utils.controller import Controller
 
 
 @configclass
-class QuadcopterVelEnvCfg(DirectRLEnvCfg):
+class QuadcopterAccEnvCfg(DirectRLEnvCfg):
     # Change viewer settings
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
@@ -63,7 +63,8 @@ class QuadcopterVelEnvCfg(DirectRLEnvCfg):
     action_space = 2
     clip_action = 1.0
 
-    v_max = 2.0
+    a_max = 8.0
+    v_max = 3.0
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -103,10 +104,10 @@ class QuadcopterVelEnvCfg(DirectRLEnvCfg):
     debug_vis_action = True
 
 
-class QuadcopterVelEnv(DirectRLEnv):
-    cfg: QuadcopterVelEnvCfg
+class QuadcopterAccEnv(DirectRLEnv):
+    cfg: QuadcopterAccEnvCfg
 
-    def __init__(self, cfg: QuadcopterVelEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: QuadcopterAccEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         if self.cfg.decimation < 1 or self.cfg.control_decimation < 1:
@@ -155,10 +156,10 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.visualize_new_cmd = False
 
         # ROS2
-        self.node = Node("quadcopter_vel_env", namespace="quadcopter_vel_env")
+        self.node = Node("quadcopter_acc_env", namespace="quadcopter_acc_env")
         self.odom_pub = self.node.create_publisher(Odometry, "odom", 10)
-        self.p_desired_pub = self.node.create_publisher(TwistStamped, "p_desired", 10)
-        self.v_desired_pub = self.node.create_publisher(TwistStamped, "v_desired", 10)
+        self.action_pub = self.node.create_publisher(Odometry, "action", 10)
+        self.a_desired_pub = self.node.create_publisher(AccelStamped, "a_desired", 10)
 
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
@@ -176,14 +177,35 @@ class QuadcopterVelEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        self.v_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
-        self.v_desired[:, :2] = self.v_xy_desired_normalized * self.cfg.v_max
-        self.p_desired[:, :2] = self.robot.data.root_pos_w[:, :2] + self.v_desired[:, :2] * self.step_dt
-        # self.p_desired[:, :2] += self.v_desired[:, :2] * self.step_dt
+        self.a_xy_desired_normalized = actions.clone().clamp(-self.cfg.clip_action, self.cfg.clip_action) / self.cfg.clip_action
+        a_xy_desired = self.a_xy_desired_normalized * self.cfg.a_max
+        norm_xy = torch.norm(a_xy_desired, dim=1, keepdim=True)
+        clip_scale = torch.clamp(norm_xy / self.cfg.a_max, min=1.0)
+        self.a_desired[:, :2] = a_xy_desired / clip_scale
 
     def _apply_action(self):
+        self.prev_v_desired = self.v_desired.clone()
+        self.v_desired[:, :2] += self.a_desired[:, :2] * self.physics_dt
+        speed_xy = torch.norm(self.v_desired[:, :2], dim=1, keepdim=True)
+        clip_scale = torch.clamp(speed_xy / self.cfg.v_max, min=1.0)
+        self.v_desired[:, :2] /= clip_scale
+
+        self.a_desired_after_v_clip = (self.v_desired - self.prev_v_desired) / self.physics_dt
+        self.p_desired[:, :2] += self.prev_v_desired[:, :2] * self.physics_dt + 0.5 * self.a_desired_after_v_clip[:, :2] * self.physics_dt**2
+
         if self.control_counter % self.cfg.control_decimation == 0:
-            state_desired = torch.cat((self.p_desired, self.v_desired, self.a_desired, self.j_desired, self.yaw_desired, self.yaw_dot_desired), dim=1)
+            state_desired = torch.cat(
+                (
+                    self.p_desired,
+                    self.v_desired,
+                    # self.a_desired,
+                    self.a_desired_after_v_clip,
+                    self.j_desired,
+                    self.yaw_desired,
+                    self.yaw_dot_desired,
+                ),
+                dim=1,
+            )
 
             self.a_desired_total, self.thrust_desired, self.q_desired, self.w_desired, self.m_desired = self.controller.get_control(
                 self.robot.data.root_state_w, state_desired
@@ -298,6 +320,7 @@ class QuadcopterVelEnv(DirectRLEnv):
         self.controller.reset(env_ids)
 
         self.p_desired[env_ids] = self.robot.data.root_pos_w[env_ids].clone()
+        self.v_desired[env_ids] = torch.zeros_like(self.v_desired[env_ids])
 
         if hasattr(self, "prev_dist_to_goal"):
             self.prev_dist_to_goal[env_ids] = torch.linalg.norm(self.goal[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1)
@@ -382,15 +405,41 @@ class QuadcopterVelEnv(DirectRLEnv):
 
         # Publish actions
         p_desired = self.p_desired[env_id].cpu().numpy()
+        q_desired = self.q_desired[env_id].cpu().numpy()
         v_desired = self.v_desired[env_id].cpu().numpy()
+        w_desired = self.w_desired[env_id].cpu().numpy()
+        a_desired = self.a_desired[env_id].cpu().numpy()
+        a_desired_after_v_clip = self.a_desired_after_v_clip[env_id].cpu().numpy()
 
-        v_desired_msg = TwistStamped()
-        v_desired_msg.header.stamp = t
-        v_desired_msg.header.frame_id = "world"
-        v_desired_msg.twist.linear.x = float(v_desired[0])
-        v_desired_msg.twist.linear.y = float(v_desired[1])
-        v_desired_msg.twist.linear.z = float(v_desired[2])
-        self.v_desired_pub.publish(v_desired_msg)
+        action_msg = Odometry()
+        action_msg.header.stamp = t
+        action_msg.header.frame_id = "world"
+        action_msg.child_frame_id = "base_link"
+        action_msg.pose.pose.position.x = float(p_desired[0])
+        action_msg.pose.pose.position.y = float(p_desired[1])
+        action_msg.pose.pose.position.z = float(p_desired[2])
+        action_msg.pose.pose.orientation.w = float(q_desired[0])
+        action_msg.pose.pose.orientation.x = float(q_desired[1])
+        action_msg.pose.pose.orientation.y = float(q_desired[2])
+        action_msg.pose.pose.orientation.z = float(q_desired[3])
+        action_msg.twist.twist.linear.x = float(v_desired[0])
+        action_msg.twist.twist.linear.y = float(v_desired[1])
+        action_msg.twist.twist.linear.z = float(v_desired[2])
+        action_msg.twist.twist.angular.x = float(w_desired[0])
+        action_msg.twist.twist.angular.y = float(w_desired[1])
+        action_msg.twist.twist.angular.z = float(w_desired[2])
+        self.action_pub.publish(action_msg)
+
+        a_desired_msg = AccelStamped()
+        a_desired_msg.header.stamp = t
+        a_desired_msg.header.frame_id = "world"
+        a_desired_msg.accel.linear.x = float(a_desired[0])
+        a_desired_msg.accel.linear.y = float(a_desired[1])
+        a_desired_msg.accel.linear.z = float(a_desired[2])
+        a_desired_msg.accel.angular.x = float(a_desired_after_v_clip[0])
+        a_desired_msg.accel.angular.y = float(a_desired_after_v_clip[1])
+        a_desired_msg.accel.angular.z = float(a_desired_after_v_clip[2])
+        self.a_desired_pub.publish(a_desired_msg)
 
     def _get_ros_timestamp(self) -> Time:
         sim_time = self._sim_step_counter * self.physics_dt
@@ -406,11 +455,11 @@ from config import agents
 
 
 gym.register(
-    id="FAST-Quadcopter-Vel",
-    entry_point=QuadcopterVelEnv,
+    id="FAST-Quadcopter-Acc",
+    entry_point=QuadcopterAccEnv,
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": QuadcopterVelEnvCfg,
+        "env_cfg_entry_point": QuadcopterAccEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:quadcopter_sb3_ppo_cfg.yaml",
         "skrl_cfg_entry_point": f"{agents.__name__}:quadcopter_skrl_ppo_cfg.yaml",
     },

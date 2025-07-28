@@ -1,0 +1,293 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root>
+ <tabbed_widget parent="main_window" name="Main Window">
+  <Tab containers="1" tab_name="p">
+   <Container>
+    <DockSplitter count="3" orientation="-" sizes="0.333333;0.333333;0.333333">
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="2.838336" left="17.390000" bottom="-6.546151" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/pose/pose/position/x" color="#ff0032"/>
+       <curve name="/quadcopter_env/action/pose/pose/position/x" color="#008aff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/pose/pose/position/x" color="#1f77b4"/>
+       <curve name="/quadcopter_pvajyyd_env/action/pose/pose/position/x" color="#ff7f0e"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="2.002886" left="17.390000" bottom="-2.636893" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/pose/pose/position/y" color="#ff0011"/>
+       <curve name="/quadcopter_env/action/pose/pose/position/y" color="#0099ff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/pose/pose/position/y" color="#d62728"/>
+       <curve name="/quadcopter_pvajyyd_env/action/pose/pose/position/y" color="#f14cc1"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="1.000947" left="17.390000" bottom="0.996849" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/pose/pose/position/z" color="#ff0011"/>
+       <curve name="/quadcopter_env/action/pose/pose/position/z" color="#0098ff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/pose/pose/position/z" color="#1ac938"/>
+       <curve name="/quadcopter_pvajyyd_env/action/pose/pose/position/z" color="#9467bd"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab containers="1" tab_name="xy">
+   <Container>
+    <DockSplitter count="1" orientation="-" sizes="1">
+     <DockArea name="...">
+      <plot mode="XYPlot" flip_x="false" flip_y="false" style="Lines">
+       <range top="2.328134" left="-6.546151" bottom="-2.962141" right="2.838336"/>
+       <limitY/>
+       <curve name="/quadcopter_pvajyyd_env/action/pose/pose/position/[x;y]" color="#1f77b4" curve_y="/quadcopter_pvajyyd_env/action/pose/pose/position/y" curve_x="/quadcopter_pvajyyd_env/action/pose/pose/position/x"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/pose/pose/position/[x;y]" color="#d62728" curve_y="/quadcopter_pvajyyd_env/odom/pose/pose/position/y" curve_x="/quadcopter_pvajyyd_env/odom/pose/pose/position/x"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab containers="1" tab_name="q">
+   <Container>
+    <DockSplitter count="3" orientation="-" sizes="0.333333;0.333333;0.333333">
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.553989" left="17.390000" bottom="-0.516904" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/pose/pose/orientation/roll" color="#ff001e"/>
+       <curve name="/quadcopter_env/action/pose/pose/orientation/roll" color="#0080ff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/pose/pose/orientation/roll" color="#17becf"/>
+       <curve name="/quadcopter_pvajyyd_env/action/pose/pose/orientation/roll" color="#d62728"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.453751" left="17.390000" bottom="-0.509417" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/pose/pose/orientation/pitch" color="#ff002a"/>
+       <curve name="/quadcopter_env/action/pose/pose/orientation/pitch" color="#009bff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/pose/pose/orientation/pitch" color="#bcbd22"/>
+       <curve name="/quadcopter_pvajyyd_env/action/pose/pose/orientation/pitch" color="#1ac938"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.126571" left="17.390000" bottom="-0.091603" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/pose/pose/orientation/yaw" color="#ff0025"/>
+       <curve name="/quadcopter_env/action/pose/pose/orientation/yaw" color="#008bff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/pose/pose/orientation/yaw" color="#1f77b4"/>
+       <curve name="/quadcopter_pvajyyd_env/action/pose/pose/orientation/yaw" color="#ff7f0e"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab containers="1" tab_name="v">
+   <Container>
+    <DockSplitter count="3" orientation="-" sizes="0.333333;0.333333;0.333333">
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="2.515990" left="17.390000" bottom="-1.899472" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/twist/twist/linear/x" color="#ff0025"/>
+       <curve name="/quadcopter_env/action/twist/twist/linear/x" color="#00a0ff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/twist/twist/linear/x" color="#f14cc1"/>
+       <curve name="/quadcopter_pvajyyd_env/action/twist/twist/linear/x" color="#bcbd22"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="2.394416" left="17.390000" bottom="-2.480156" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/twist/twist/linear/y" color="#ff0022"/>
+       <curve name="/quadcopter_env/action/twist/twist/linear/y" color="#00a0ff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/twist/twist/linear/y" color="#9467bd"/>
+       <curve name="/quadcopter_pvajyyd_env/action/twist/twist/linear/y" color="#1f77b4"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.009294" left="17.390000" bottom="-0.017627" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/twist/twist/linear/z" color="#ff002e"/>
+       <curve name="/quadcopter_env/action/twist/twist/linear/z" color="#0093ff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/twist/twist/linear/z" color="#17becf"/>
+       <curve name="/quadcopter_pvajyyd_env/action/twist/twist/linear/z" color="#d62728"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab containers="1" tab_name="w">
+   <Container>
+    <DockSplitter count="3" orientation="-" sizes="0.333333;0.333333;0.333333">
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="4.755628" left="17.390000" bottom="-5.508843" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/twist/twist/angular/x" color="#ff0020"/>
+       <curve name="/quadcopter_env/action/twist/twist/angular/x" color="#0091ff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/twist/twist/angular/x" color="#1ac938"/>
+       <curve name="/quadcopter_pvajyyd_env/action/twist/twist/angular/x" color="#9467bd"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="2.585242" left="17.390000" bottom="-5.332388" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/twist/twist/angular/y" color="#ff001a"/>
+       <curve name="/quadcopter_env/action/twist/twist/angular/y" color="#0097ff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/twist/twist/angular/y" color="#ff7f0e"/>
+       <curve name="/quadcopter_pvajyyd_env/action/twist/twist/angular/y" color="#17becf"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="1.022021" left="17.390000" bottom="-1.009409" right="37.390000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/odom/twist/twist/angular/z" color="#ff000f"/>
+       <curve name="/quadcopter_env/action/twist/twist/angular/z" color="#009bff"/>
+       <curve name="/quadcopter_pvajyyd_env/odom/twist/twist/angular/z" color="#f14cc1"/>
+       <curve name="/quadcopter_pvajyyd_env/action/twist/twist/angular/z" color="#bcbd22"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab containers="1" tab_name="a">
+   <Container>
+    <DockSplitter count="3" orientation="-" sizes="0.334137;0.331727;0.334137">
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/a_desired/accel/linear/x" color="#0097ff"/>
+       <curve name="/quadcopter_env/a_desired_total/accel/linear/x" color="#00ff1e"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/a_desired/accel/linear/y" color="#0097ff"/>
+       <curve name="/quadcopter_env/a_desired_total/accel/linear/y" color="#00ff23"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/a_desired/accel/linear/z" color="#009cff"/>
+       <curve name="/quadcopter_env/a_desired_total/accel/linear/z" color="#00ff18"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab containers="1" tab_name="j">
+   <Container>
+    <DockSplitter count="3" orientation="-" sizes="0.334137;0.331727;0.334137">
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/j_desired/vector/x" color="#0090ff"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/j_desired/vector/y" color="#0096ff"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/j_desired/vector/z" color="#00a7ff"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <Tab containers="1" tab_name="yydt">
+   <Container>
+    <DockSplitter count="3" orientation="-" sizes="0.334137;0.331727;0.334137">
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/yaw_yaw_dot_thrust_desired/point/x" color="#00b1ff"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/yaw_yaw_dot_thrust_desired/point/y" color="#00b8ff"/>
+      </plot>
+     </DockArea>
+     <DockArea name="...">
+      <plot mode="TimeSeries" flip_x="false" flip_y="false" style="Lines">
+       <range top="0.100000" left="0.000000" bottom="-0.100000" right="0.000000"/>
+       <limitY/>
+       <curve name="/quadcopter_env/yaw_yaw_dot_thrust_desired/point/z" color="#00bbff"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <currentTabIndex index="1"/>
+ </tabbed_widget>
+ <use_relative_time_offset enabled="1"/>
+ <!-- - - - - - - - - - - - - - - -->
+ <!-- - - - - - - - - - - - - - - -->
+ <Plugins>
+  <plugin ID="DataLoad CSV">
+   <parameters delimiter="0" time_axis=""/>
+  </plugin>
+  <plugin ID="DataLoad MCAP"/>
+  <plugin ID="DataLoad ROS2 bags">
+   <use_header_stamp value="false"/>
+   <discard_large_arrays value="true"/>
+   <max_array_size value="100"/>
+   <boolean_strings_to_number value="true"/>
+   <remove_suffix_from_strings value="true"/>
+   <selected_topics value=""/>
+  </plugin>
+  <plugin ID="DataLoad ULog"/>
+  <plugin ID="ROS2 Topic Subscriber">
+   <use_header_stamp value="true"/>
+   <discard_large_arrays value="true"/>
+   <max_array_size value="100"/>
+   <boolean_strings_to_number value="true"/>
+   <remove_suffix_from_strings value="true"/>
+   <selected_topics value="/quadcopter_pvajyyd_env/a_desired;/quadcopter_pvajyyd_env/a_desired_total;/quadcopter_pvajyyd_env/action;/quadcopter_pvajyyd_env/j_desired;/quadcopter_pvajyyd_env/m_desired;/quadcopter_pvajyyd_env/odom;/quadcopter_pvajyyd_env/yaw_yaw_dot_thrust_desired"/>
+  </plugin>
+  <plugin ID="UDP Server"/>
+  <plugin ID="WebSocket Server"/>
+  <plugin ID="ZMQ Subscriber"/>
+  <plugin ID="Fast Fourier Transform"/>
+  <plugin ID="Quaternion to RPY"/>
+  <plugin ID="Reactive Script Editor">
+   <library code="--[[ Helper function to create a series from arrays&#xa;&#xa; new_series: a series previously created with ScatterXY.new(name)&#xa; prefix:     prefix of the timeseries, before the index of the array&#xa; suffix_X:   suffix to complete the name of the series containing the X value. If [nil], use the index of the array.&#xa; suffix_Y:   suffix to complete the name of the series containing the Y value&#xa; timestamp:   usually the tracker_time variable&#xa;              &#xa; Example:&#xa; &#xa; Assuming we have multiple series in the form:&#xa; &#xa;   /trajectory/node.{X}/position/x&#xa;   /trajectory/node.{X}/position/y&#xa;   &#xa; where {N} is the index of the array (integer). We can create a reactive series from the array with:&#xa; &#xa;   new_series = ScatterXY.new(&quot;my_trajectory&quot;) &#xa;   CreateSeriesFromArray( new_series, &quot;/trajectory/node&quot;, &quot;position/x&quot;, &quot;position/y&quot;, tracker_time );&#xa;--]]&#xa;&#xa;function CreateSeriesFromArray( new_series, prefix, suffix_X, suffix_Y, timestamp )&#xa;  &#xa;  --- clear previous values&#xa;  new_series:clear()&#xa;  &#xa;  --- Append points to new_series&#xa;  index = 0&#xa;  while(true) do&#xa;&#xa;    x = index;&#xa;    -- if not nil, get the X coordinate from a series&#xa;    if suffix_X ~= nil then &#xa;      series_x = TimeseriesView.find( string.format( &quot;%s.%d/%s&quot;, prefix, index, suffix_X) )&#xa;      if series_x == nil then break end&#xa;      x = series_x:atTime(timestamp)&#x9; &#xa;    end&#xa;    &#xa;    series_y = TimeseriesView.find( string.format( &quot;%s.%d/%s&quot;, prefix, index, suffix_Y) )&#xa;    if series_y == nil then break end &#xa;    y = series_y:atTime(timestamp)&#xa;    &#xa;    new_series:push_back(x,y)&#xa;    index = index+1&#xa;  end&#xa;end&#xa;&#xa;--[[ Similar to the built-in function GetSeriesNames(), but select only the names with a give prefix. --]]&#xa;&#xa;function GetSeriesNamesByPrefix(prefix)&#xa;  -- GetSeriesNames(9 is a built-in function&#xa;  all_names = GetSeriesNames()&#xa;  filtered_names = {}&#xa;  for i, name in ipairs(all_names)  do&#xa;    -- check the prefix&#xa;    if name:find(prefix, 1, #prefix) then&#xa;      table.insert(filtered_names, name);&#xa;    end&#xa;  end&#xa;  return filtered_names&#xa;end&#xa;&#xa;--[[ Modify an existing series, applying offsets to all their X and Y values&#xa;&#xa; series: an existing timeseries, obtained with TimeseriesView.find(name)&#xa; delta_x: offset to apply to each x value&#xa; delta_y: offset to apply to each y value &#xa;  &#xa;--]]&#xa;&#xa;function ApplyOffsetInPlace(series, delta_x, delta_y)&#xa;  -- use C++ indeces, not Lua indeces&#xa;  for index=0, series:size()-1 do&#xa;    x,y = series:at(index)&#xa;    series:set(index, x + delta_x, y + delta_y)&#xa;  end&#xa;end&#xa;"/>
+   <scripts/>
+  </plugin>
+  <plugin ID="CSV Exporter"/>
+  <plugin ID="ROS2 Topic Re-Publisher"/>
+ </Plugins>
+ <!-- - - - - - - - - - - - - - - -->
+ <previouslyLoaded_Datafiles/>
+ <previouslyLoaded_Streamer name="ROS2 Topic Subscriber"/>
+ <!-- - - - - - - - - - - - - - - -->
+ <customMathEquations/>
+ <snippets/>
+ <!-- - - - - - - - - - - - - - - -->
+</root>
+

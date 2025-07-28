@@ -80,7 +80,7 @@ DJI_FPV_CFG = ArticulationCfg(
     actuators={
         "dummy": ImplicitActuatorCfg(
             joint_names_expr=[".*"],
-            stiffness=100000000.0,
+            stiffness=0.0,
             damping=0.0,
         ),
     },

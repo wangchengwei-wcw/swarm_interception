@@ -2,26 +2,27 @@ from loguru import logger
 import math
 import torch
 
-from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_quat
+from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_quat, axis_angle_from_quat
 
 
 class Controller:
     def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor, num_envs: int):
         # Params
-        # self.kPp = torch.tensor([2.0, 2.0, 20.0], dtype=torch.float32, device=gravity.device)  # 50Hz velocity control
-        self.kPp = torch.tensor([0.1, 0.1, 1.0], dtype=torch.float32, device=gravity.device)  # 2~5Hz velocity control
-        # self.kPp = torch.tensor([0.05, 0.05, 0.5], dtype=torch.float32, device=gravity.device)  # 1Hz velocity control
+        self.kPp = torch.tensor([3.0, 3.0, 10.0], dtype=torch.float32, device=gravity.device)
+        self.kPv = torch.tensor([1.0, 1.0, 10.0], dtype=torch.float32, device=gravity.device)
+        self.kPR = torch.tensor([10.0, 10.0, 20.0], dtype=torch.float32, device=gravity.device)
+        self.kPw = torch.tensor([0.02, 0.0125, 0.0125], dtype=torch.float32, device=gravity.device)
+        self.kIw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)
+        self.kDw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)
 
-        # self.kPv = torch.tensor([8.0, 8.0, 30.0], dtype=torch.float32, device=gravity.device)
-        self.kPv = torch.tensor([30.0, 30.0, 30.0], dtype=torch.float32, device=gravity.device)
-
-        self.kPR = torch.tensor([50.0, 50.0, 50.0], dtype=torch.float32, device=gravity.device)
-        self.kPw = torch.tensor([0.06, 0.06, 0.06], dtype=torch.float32, device=gravity.device)
+        self.w_error_integral_max = torch.tensor([0.1, 0.1, 0.1], device=gravity.device)
+        self.w_error_integral = torch.zeros(num_envs, 3, device=gravity.device)
+        self.w_error_prev = torch.zeros(num_envs, 3, device=gravity.device)
 
         self.K_min_norm_collec_acc = 3
-        self.K_max_ang = 80
-        self.K_max_bodyrates_feedback = 100000
-        self.K_max_angular_acc = 100000
+        self.K_max_ang = 60
+        self.K_max_bodyrates_feedback = 4
+        self.K_max_angular_acc = 60
 
         self.step_dt = step_dt
         self.gravity = gravity.to(dtype=torch.float32)
@@ -38,10 +39,14 @@ class Controller:
             self.w_old = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.gravity.device)
             self.thrust_old = torch.full((self.num_envs,), self.mass * self.gravity.norm(), dtype=torch.float32, device=self.gravity.device)
             self.w_last = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.gravity.device)
+            self.w_error_integral = torch.zeros(self.num_envs, 3, device=self.gravity.device)
+            self.w_error_prev = torch.zeros(self.num_envs, 3, device=self.gravity.device)
         else:
             self.w_old[env_ids] = torch.zeros(len(env_ids), 3, dtype=torch.float32, device=self.gravity.device)
             self.thrust_old[env_ids] = torch.full((len(env_ids),), self.mass * self.gravity.norm(), dtype=torch.float32, device=self.gravity.device)
             self.w_last[env_ids] = torch.zeros(len(env_ids), 3, dtype=torch.float32, device=self.gravity.device)
+            self.w_error_integral[env_ids] = torch.zeros(len(env_ids), 3, device=self.gravity.device)
+            self.w_error_prev[env_ids] = torch.zeros(len(env_ids), 3, device=self.gravity.device)
 
     def get_control(self, state_: torch.Tensor, action_: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         state = state_.clone().to(dtype=torch.float32)
@@ -80,7 +85,7 @@ class Controller:
         w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last, self.K_max_angular_acc, self.step_dt)
         self.w_last = w_desired
 
-        thrust_desired, torque_desired = bodyrate_control(q_odom, w_odom, force_desired, w_desired, self.inertia, self.kPw)
+        thrust_desired, torque_desired = self.bodyrate_control(q_odom, w_odom, force_desired, w_desired)
         return total_des_acc, thrust_desired, q_desired, w_desired, quat_rotate(quat_inv(q_odom), torque_desired)
 
     def minimum_singularity_flat_with_drag(
@@ -120,6 +125,38 @@ class Controller:
             logger.warning(f"Conor case in environment[{i}]: exactly inverted flight or unactuated falling 0_0")
 
         return thrust_desired, q_desired, w_desired
+
+    def bodyrate_control(
+        self,
+        q_odom: torch.Tensor,
+        w_odom: torch.Tensor,
+        force_desired: torch.Tensor,
+        w_desired: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+
+        R = matrix_from_quat(q_odom)
+        thrust_desired = (force_desired * R[:, :, 2]).sum(dim=1)
+
+        I = self.inertia.view(3, 3)
+        I_w_odom = torch.matmul(I, w_odom.transpose(0, 1))
+        feedforward = torch.stack(
+            [
+                w_odom[:, 1] * I_w_odom[2, :] - w_odom[:, 2] * I_w_odom[1, :],
+                w_odom[:, 2] * I_w_odom[0, :] - w_odom[:, 0] * I_w_odom[2, :],
+                w_odom[:, 0] * I_w_odom[1, :] - w_odom[:, 1] * I_w_odom[0, :],
+            ],
+            dim=1,
+        )
+        w_err = w_desired - w_odom
+
+        self.w_error_integral += w_err * self.step_dt
+        self.w_error_integral = torch.max(torch.min(self.w_error_integral, self.w_error_integral_max), -self.w_error_integral_max)
+        w_err_deriv = (w_err - self.w_error_prev) / self.step_dt
+        self.w_error_prev = w_err.clone()
+
+        torque_desired = feedforward + self.kPw * w_err + self.kIw * self.w_error_integral + self.kDw * w_err_deriv
+
+        return thrust_desired, torque_desired
 
 
 @torch.jit.script
@@ -266,10 +303,9 @@ def flatness_with_drag(
 @torch.jit.script
 def compute_feedback_control_bodyrates(q_odom: torch.Tensor, q_desired: torch.Tensor, kPR: torch.Tensor, K_max_bodyrates_feedback: float):
 
-    q_e = quat_mul(quat_inv(q_odom), q_desired)
-    q_e_vector = q_e[:, 1:]
-    bodyrates = 2.0 * kPR * q_e_vector
-    bodyrates = torch.where(q_e[:, 0:1] >= 0, bodyrates, -bodyrates)
+    q_err = quat_mul(quat_inv(q_odom), q_desired)
+    axis_angle_err = axis_angle_from_quat(q_err)
+    bodyrates = kPR * axis_angle_err
     bodyrates = torch.clamp(bodyrates, min=-K_max_bodyrates_feedback, max=K_max_bodyrates_feedback)
 
     return bodyrates
@@ -290,34 +326,6 @@ def compute_limited_angular_acc(candidate_bodyrate: torch.Tensor, w_last: torch.
         ),
     )
     return bodyrate_out
-
-
-@torch.jit.script
-def bodyrate_control(
-    q_odom: torch.Tensor,
-    w_odom: torch.Tensor,
-    force_desired: torch.Tensor,
-    w_desired: torch.Tensor,
-    inertia: torch.Tensor,
-    kPw: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-
-    R = matrix_from_quat(q_odom)
-    thrust_desired = (force_desired * R[:, :, 2]).sum(dim=1)
-
-    I = inertia.view(3, 3)
-    I_w_odom = torch.matmul(I, w_odom.transpose(0, 1))
-    feedforward = torch.stack(
-        [
-            w_odom[:, 1] * I_w_odom[2, :] - w_odom[:, 2] * I_w_odom[1, :],
-            w_odom[:, 2] * I_w_odom[0, :] - w_odom[:, 0] * I_w_odom[2, :],
-            w_odom[:, 0] * I_w_odom[1, :] - w_odom[:, 1] * I_w_odom[0, :],
-        ],
-        dim=1,
-    )
-    torque_desired = feedforward + kPw * (w_desired - w_odom)
-
-    return thrust_desired, torque_desired
 
 
 @torch.jit.script
