@@ -3,7 +3,9 @@ from __future__ import annotations
 import gymnasium as gym
 import math
 import random
+import time
 import torch
+from collections import deque
 from collections.abc import Sequence
 from loguru import logger
 
@@ -40,7 +42,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
     # mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    mutual_collision_avoidance_reward_weight = 20.0  # Stage 2
+    mutual_collision_avoidance_reward_weight = 30.0  # Stage 2
     max_lin_vel_penalty_weight = 0.0
     ang_vel_penalty_weight = 0.0
     action_diff_penalty_weight = 0.2
@@ -61,6 +63,8 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     mission_names = ["migration", "crossover", "chaotic"]
     success_distance_threshold = 0.5  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
+    lowpass_filter_cutoff_freq = 2.0
+    torque_ctrl_delay_s = 0.02
 
     # Env
     episode_length_s = 30.0
@@ -83,7 +87,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     state_space = history_length * transient_state_dim
 
     # Domain randomization
-    enable_domain_randomization = True
+    enable_domain_randomization = False
 
     # Experience replay
     enable_experience_replay = False
@@ -173,7 +177,12 @@ class SwarmAccEnv(DirectMARLEnv):
         self.robot_weights = {agent: (self.robot_masses[agent] * self.gravity.norm()).item() for agent in self.cfg.possible_agents}
 
         # Controller
-        self.a_desired_total, self.thrust_desired, self._thrust_desired, self.q_desired, self.w_desired, self.m_desired = {}, {}, {}, {}, {}, {}
+        self.a_desired_total = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self.thrust_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self._thrust_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self.q_desired = {agent: torch.zeros(self.num_envs, 4, device=self.device) for agent in self.cfg.possible_agents}
+        self.w_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self.m_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.controllers = {
             agent: Controller(
                 1 / self.cfg.control_freq, self.gravity, self.robot_masses[agent].to(self.device), self.robot_inertias[agent].to(self.device), self.num_envs
@@ -183,6 +192,18 @@ class SwarmAccEnv(DirectMARLEnv):
         self.control_counter = 0
         self.a_xy_desired_normalized, self.prev_a_xy_desired_normalized = {}, {}
 
+        # Low-pass filter for smoothing input signal
+        self.lowpass_filter_alpha = (2 * math.pi * self.cfg.lowpass_filter_cutoff_freq * self.physics_dt) / (
+            2 * math.pi * self.cfg.lowpass_filter_cutoff_freq * self.physics_dt + 1
+        )
+        self.a_desired_smoothed = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+        self.prev_a_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
+
+        # Artificial delay for torque control
+        self.delay_steps = max(math.ceil(cfg.torque_ctrl_delay_s / self.physics_dt), 1)
+        self.thrust_buffer = {agent: deque([torch.zeros(self.num_envs, 3, device=self.device) for _ in range(self.delay_steps)]) for agent in self.cfg.possible_agents}
+        self.m_buffer = {agent: deque([torch.zeros(self.num_envs, 3, device=self.device) for _ in range(self.delay_steps)]) for agent in self.cfg.possible_agents}
+
         # Denormalized actions
         self.p_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.v_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
@@ -190,9 +211,6 @@ class SwarmAccEnv(DirectMARLEnv):
         self.j_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
         self.yaw_desired = {agent: torch.zeros(self.num_envs, 1, device=self.device) for agent in self.cfg.possible_agents}
         self.yaw_dot_desired = {agent: torch.zeros(self.num_envs, 1, device=self.device) for agent in self.cfg.possible_agents}
-
-        self.prev_v_desired = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
-        self.a_after_v_clip = {agent: torch.zeros(self.num_envs, 3, device=self.device) for agent in self.cfg.possible_agents}
 
         self.prev_dist_to_goals = {}
 
@@ -216,7 +234,6 @@ class SwarmAccEnv(DirectMARLEnv):
 
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
-        self.visualize_new_cmd = False
 
         # ROS2
         self.node = Node("swarm_acc_env", namespace="swarm_acc_env")
@@ -267,89 +284,77 @@ class SwarmAccEnv(DirectMARLEnv):
             self.a_desired[agent][:, :2] = a_xy_desired / clip_scale
 
     def _apply_action(self) -> None:
+        prev_v_desired, a_after_v_clip = {}, {}
         for agent in self.possible_agents:
+            prev_v_desired[agent] = self.v_desired[agent].clone()
 
-            # self.p_desired[agent][:, :2] = (
-            #     self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.physics_dt + 0.5 * self.a_desired[agent][:, :2] * self.physics_dt**2
-            # )
-            # self.v_desired[agent][:, :2] = self.robots[agent].data.root_lin_vel_w[:, :2] + self.a_desired[agent][:, :2] * self.physics_dt
-            # speed_xy = torch.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
-            # clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
-            # self.v_desired[agent][:, :2] /= clip_scale
+            self.a_desired_smoothed[agent] = self.lowpass_filter_alpha * self.a_desired[agent] + (1.0 - self.lowpass_filter_alpha) * self.prev_a_desired[agent]
+            self.prev_a_desired[agent] = self.a_desired_smoothed[agent].clone()
 
-
-            # self.v_desired[agent][:, :2] = self.robots[agent].data.root_lin_vel_w[:, :2] + self.a_desired[agent][:, :2] * self.physics_dt
-            # speed_xy = torch.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
-            # clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
-            # self.v_desired[agent][:, :2] /= clip_scale
-            # self.p_desired[agent][:, :2] = (
-            #     self.robots[agent].data.root_pos_w[:, :2] + self.v_desired[agent][:, :2] * self.physics_dt
-            # )
-            # self.a_after_v_clip[agent][:, :2] = (self.v_desired[agent][:, :2] - self.robots[agent].data.root_lin_vel_w[:, :2]) / self.physics_dt
-
-
-            self.prev_v_desired[agent] = self.v_desired[agent].clone()
-            self.v_desired[agent][:, :2] += self.a_desired[agent][:, :2] * self.physics_dt
+            self.v_desired[agent][:, :2] += self.a_desired_smoothed[agent][:, :2] * self.physics_dt
             speed_xy = torch.norm(self.v_desired[agent][:, :2], dim=1, keepdim=True)
             clip_scale = torch.clamp(speed_xy / self.cfg.v_max[agent], min=1.0)
             self.v_desired[agent][:, :2] /= clip_scale
 
-            self.a_after_v_clip[agent] = (self.v_desired[agent] - self.prev_v_desired[agent]) / self.physics_dt
-            self.p_desired[agent][:, :2] += (
-                self.prev_v_desired[agent][:, :2] * self.physics_dt + 0.5 * self.a_after_v_clip[agent][:, :2] * self.physics_dt**2
-            )
+            a_after_v_clip[agent] = (self.v_desired[agent] - prev_v_desired[agent]) / self.physics_dt
+            self.p_desired[agent][:, :2] += prev_v_desired[agent][:, :2] * self.physics_dt + 0.5 * a_after_v_clip[agent][:, :2] * self.physics_dt**2
 
-        ### ============= Realistic velocity tracking ============= ###
+        ### ============= Realistic acceleration tracking ============= ###
 
-        if self.control_counter % self.cfg.control_decimation == 0:
-            start = time.perf_counter()
-            for agent in self.possible_agents:
-                state_desired = torch.cat(
-                    (
-                        self.p_desired[agent],
-                        self.v_desired[agent],
-                        # self.a_desired[agent],
-                        self.a_after_v_clip[agent],
-                        self.j_desired[agent],
-                        self.yaw_desired[agent],
-                        self.yaw_dot_desired[agent],
-                    ),
-                    dim=1,
-                )
+        # if self.control_counter % self.cfg.control_decimation == 0:
+        #     start = time.perf_counter()
+        #     for agent in self.possible_agents:
+        #         state_desired = torch.cat(
+        #             (
+        #                 self.p_desired[agent],
+        #                 self.v_desired[agent],
+        #                 # self.a_desired[agent],
+        #                 a_after_v_clip[agent],
+        #                 self.j_desired[agent],
+        #                 self.yaw_desired[agent],
+        #                 self.yaw_dot_desired[agent],
+        #             ),
+        #             dim=1,
+        #         )
 
-                (
-                    self.a_desired_total[agent],
-                    self.thrust_desired[agent],
-                    self.q_desired[agent],
-                    self.w_desired[agent],
-                    self.m_desired[agent],
-                ) = self.controllers[agent].get_control(
-                    self.robots[agent].data.root_state_w,
-                    state_desired,
-                )
+        #         (
+        #             self.a_desired_total[agent],
+        #             self.thrust_desired[agent],
+        #             self.q_desired[agent],
+        #             self.w_desired[agent],
+        #             self.m_desired[agent],
+        #         ) = self.controllers[agent].get_control(
+        #             self.robots[agent].data.root_state_w,
+        #             state_desired,
+        #         )
 
-                self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
+        #         self._thrust_desired[agent] = torch.cat((torch.zeros(self.num_envs, 2, device=self.device), self.thrust_desired[agent].unsqueeze(1)), dim=1)
 
-            end = time.perf_counter()
-            logger.debug(f"get_control for all drones takes {end - start:.5f}s")
+        #     end = time.perf_counter()
+        #     logger.debug(f"get_control for all drones takes {end - start:.5f}s")
 
-            self._publish_debug_signals()
-
-            self.control_counter = 0
-        self.control_counter += 1
-
-        for agent in self.possible_agents:
-            self.robots[agent].set_external_force_and_torque(self._thrust_desired[agent].unsqueeze(1), self.m_desired[agent].unsqueeze(1), body_ids=self.body_ids[agent])
-
-        ### ============= Ideal velocity tracking ============= ###
-
-        # for agent in self.possible_agents:
         #     self._publish_debug_signals()
 
-        #     v_desired = self.v_desired[agent].clone()
-        #     v_desired[:, 2] += 100.0 * (self.p_desired[agent][:, 2] - self.robots[agent].data.root_pos_w[:, 2])
-        #     # Set angular velocity to zero, treat the rigid body as a particle
-        #     self.robots[agent].write_root_velocity_to_sim(torch.cat((v_desired, torch.zeros_like(v_desired)), dim=1))
+        #     self.control_counter = 0
+        # self.control_counter += 1
+
+        # for agent in self.possible_agents:
+        #     delayed_thrust = self.thrust_buffer[agent].popleft()
+        #     delayed_m = self.m_buffer[agent].popleft()
+        #     self.thrust_buffer[agent].append(self._thrust_desired[agent].clone())
+        #     self.m_buffer[agent].append(self.m_desired[agent].clone())
+
+        #     self.robots[agent].set_external_force_and_torque(delayed_thrust.unsqueeze(1), delayed_m.unsqueeze(1), body_ids=self.body_ids[agent])
+
+        ### ============= Ideal acceleration tracking ============= ###
+
+        self._publish_debug_signals()
+
+        for agent in self.possible_agents:
+            v_desired = self.v_desired[agent].clone()
+            v_desired[:, 2] += 100.0 * (self.p_desired[agent][:, 2] - self.robots[agent].data.root_pos_w[:, 2])
+            # Set angular velocity to zero, treat the rigid body as a particle
+            self.robots[agent].write_root_velocity_to_sim(torch.cat((v_desired, torch.zeros_like(v_desired)), dim=1))
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         died_unified = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -708,6 +713,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
             self.p_desired[agent][env_ids] = self.robots[agent].data.root_pos_w[env_ids].clone()
             self.v_desired[agent][env_ids] = torch.zeros_like(self.robots[agent].data.root_lin_vel_w[env_ids])
+            self.prev_a_desired[agent][env_ids] = torch.zeros_like(self.a_desired[agent][env_ids])
 
             if agent in self.prev_dist_to_goals:
                 self.prev_dist_to_goals[agent][env_ids] = torch.linalg.norm(self.goals[agent][env_ids] - self.robots[agent].data.root_pos_w[env_ids], dim=1)
@@ -1073,6 +1079,7 @@ class SwarmAccEnv(DirectMARLEnv):
         p_desired = self.p_desired[agent][env_id].cpu().numpy()
         v_desired = self.v_desired[agent][env_id].cpu().numpy()
         a_desired = self.a_desired[agent][env_id].cpu().numpy()
+        a_desired_smoothed = self.a_desired_smoothed[agent][env_id].cpu().numpy()
 
         a_desired_total = self.a_desired_total[agent][env_id].cpu().numpy()
         q_desired = self.q_desired[agent][env_id].cpu().numpy()
@@ -1103,6 +1110,9 @@ class SwarmAccEnv(DirectMARLEnv):
         a_desired_msg.accel.linear.x = float(a_desired[0])
         a_desired_msg.accel.linear.y = float(a_desired[1])
         a_desired_msg.accel.linear.z = float(a_desired[2])
+        a_desired_msg.accel.angular.x = float(a_desired_smoothed[0])
+        a_desired_msg.accel.angular.y = float(a_desired_smoothed[1])
+        a_desired_msg.accel.angular.z = float(a_desired_smoothed[2])
         self.a_desired_pub.publish(a_desired_msg)
 
         a_desired_total_msg = AccelStamped()

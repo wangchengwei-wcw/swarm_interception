@@ -65,6 +65,7 @@ class QuadcopterAccEnvCfg(DirectRLEnvCfg):
 
     a_max = 8.0
     v_max = 3.0
+    a_desired_filter_cutoff_freq = 20.0
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -151,6 +152,12 @@ class QuadcopterAccEnv(DirectRLEnv):
         self.yaw_dot_desired = torch.zeros(self.num_envs, 1, device=self.device)
         self.control_counter = 0
 
+        # Low-pass filter for smoothing input signal
+        self._a_desired_prev = torch.zeros_like(self.a_desired)
+        self._filter_alpha = (2 * math.pi * self.cfg.a_desired_filter_cutoff_freq * self.physics_dt) / (
+            2 * math.pi * self.cfg.a_desired_filter_cutoff_freq * self.physics_dt + 1
+        )
+
         # Add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
         self.visualize_new_cmd = False
@@ -185,7 +192,12 @@ class QuadcopterAccEnv(DirectRLEnv):
 
     def _apply_action(self):
         self.prev_v_desired = self.v_desired.clone()
-        self.v_desired[:, :2] += self.a_desired[:, :2] * self.physics_dt
+
+        self.a_desired_smoothed = self._filter_alpha * self.a_desired + (1.0 - self._filter_alpha) * self._a_desired_prev
+        self._a_desired_prev = self.a_desired_smoothed.clone()
+
+        self.v_desired[:, :2] += self.a_desired_smoothed[:, :2] * self.physics_dt
+        # self.v_desired[:, :2] += self.a_desired[:, :2] * self.physics_dt
         speed_xy = torch.norm(self.v_desired[:, :2], dim=1, keepdim=True)
         clip_scale = torch.clamp(speed_xy / self.cfg.v_max, min=1.0)
         self.v_desired[:, :2] /= clip_scale
@@ -321,6 +333,7 @@ class QuadcopterAccEnv(DirectRLEnv):
 
         self.p_desired[env_ids] = self.robot.data.root_pos_w[env_ids].clone()
         self.v_desired[env_ids] = torch.zeros_like(self.v_desired[env_ids])
+        self._a_desired_prev[env_ids] = torch.zeros_like(self.a_desired[env_ids])
 
         if hasattr(self, "prev_dist_to_goal"):
             self.prev_dist_to_goal[env_ids] = torch.linalg.norm(self.goal[env_ids] - self.robot.data.root_pos_w[env_ids], dim=1)
@@ -408,7 +421,8 @@ class QuadcopterAccEnv(DirectRLEnv):
         q_desired = self.q_desired[env_id].cpu().numpy()
         v_desired = self.v_desired[env_id].cpu().numpy()
         w_desired = self.w_desired[env_id].cpu().numpy()
-        a_desired = self.a_desired[env_id].cpu().numpy()
+        # a_desired = self.a_desired[env_id].cpu().numpy()
+        a_desired = self.a_desired_smoothed[env_id].cpu().numpy()
         a_desired_after_v_clip = self.a_desired_after_v_clip[env_id].cpu().numpy()
 
         action_msg = Odometry()
