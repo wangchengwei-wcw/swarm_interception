@@ -69,7 +69,7 @@ def generate_eight_trajectory(p_odom, v_odom, a_odom, p_init):
     inner_pts[:, :, 3] = p_init + torch.tensor([-3.0, -3.0, 0.0], device=p_odom.device)
     inner_pts[:, :, 4] = p_init + torch.tensor([-3.0, 3.0, 0.0], device=p_odom.device)
 
-    durations = torch.full((p_odom.shape[0], num_pieces), 1.5, device=p_odom.device)
+    durations = torch.full((p_odom.shape[0], num_pieces), 2.0, device=p_odom.device)
 
     MJO = MinJerkOpt(head_pva, tail_pva, num_pieces)
     start = time.perf_counter()

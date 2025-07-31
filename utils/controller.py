@@ -9,7 +9,7 @@ class Controller:
     def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor, num_envs: int):
         # Params
         self.kPp = torch.tensor([3.0, 3.0, 10.0], dtype=torch.float32, device=gravity.device)
-        self.kPv = torch.tensor([1.0, 1.0, 10.0], dtype=torch.float32, device=gravity.device)
+        self.kPv = torch.tensor([3.0, 3.0, 10.0], dtype=torch.float32, device=gravity.device)
         self.kPR = torch.tensor([10.0, 10.0, 20.0], dtype=torch.float32, device=gravity.device)
         self.kPw = torch.tensor([0.02, 0.0125, 0.0125], dtype=torch.float32, device=gravity.device)
         self.kIw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)
@@ -20,7 +20,7 @@ class Controller:
         self.w_error_prev = torch.zeros(num_envs, 3, device=gravity.device)
 
         self.K_min_norm_collec_acc = 3
-        self.K_max_ang = 60
+        self.K_max_ang = 45
         self.K_max_bodyrates_feedback = 4
         self.K_max_angular_acc = 60
 

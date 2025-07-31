@@ -1,28 +1,28 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <root>
- <tabbed_widget parent="main_window" name="Main Window">
-  <Tab containers="1" tab_name="v">
+ <tabbed_widget name="Main Window" parent="main_window">
+  <Tab tab_name="v" containers="1">
    <Container>
     <DockSplitter orientation="-" count="3" sizes="0.33253;0.33494;0.33253">
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="1.915008" bottom="-3.243094" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="3.124166" left="92.310000" right="102.310000" bottom="-3.148605"/>
        <limitY/>
        <curve name="/swarm_acc_env/action/twist/twist/linear/x" color="#1f77b4"/>
        <curve name="/swarm_acc_env/odom/twist/twist/linear/x" color="#d62728"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="0.444406" bottom="-2.656924" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="3.149978" left="92.310000" right="102.310000" bottom="-3.149995"/>
        <limitY/>
        <curve name="/swarm_acc_env/action/twist/twist/linear/y" color="#1ac938"/>
        <curve name="/swarm_acc_env/odom/twist/twist/linear/y" color="#ff7f0e"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="4.143506" bottom="-0.101061" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="3.074667" left="92.310000" right="102.310000" bottom="-0.061335"/>
        <limitY/>
        <curve name="speed_des" color="#f14cc1"/>
        <curve name="speed" color="#9467bd"/>
@@ -31,28 +31,28 @@
     </DockSplitter>
    </Container>
   </Tab>
-  <Tab containers="1" tab_name="p">
+  <Tab tab_name="p" containers="1">
    <Container>
     <DockSplitter orientation="-" count="3" sizes="0.333333;0.333333;0.333333">
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="4.105075" bottom="-2.074455" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="242.368917" left="92.310000" right="102.310000" bottom="238.634333"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/pose/pose/position/x" color="#17becf"/>
        <curve name="/swarm_acc_env/action/pose/pose/position/x" color="#bcbd22"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="1.749774" bottom="-3.308816" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="-224.602785" left="92.310000" right="102.310000" bottom="-228.289625"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/pose/pose/position/y" color="#1f77b4"/>
        <curve name="/swarm_acc_env/action/pose/pose/position/y" color="#d62728"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="Lines">
-       <range top="1.000579" bottom="0.998766" left="129.260000" right="134.260000"/>
+      <plot style="Lines" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="1.000012" left="92.310000" right="102.310000" bottom="0.999497"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/pose/pose/position/z" color="#1ac938"/>
        <curve name="/swarm_acc_env/action/pose/pose/position/z" color="#ff7f0e"/>
@@ -61,28 +61,28 @@
     </DockSplitter>
    </Container>
   </Tab>
-  <Tab containers="1" tab_name="w">
+  <Tab tab_name="w" containers="1">
    <Container>
     <DockSplitter orientation="-" count="3" sizes="0.333333;0.333333;0.333333">
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="7.080060" bottom="-7.275015" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="0.000000" left="92.310000" right="102.310000" bottom="-0.000000"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/twist/twist/angular/x" color="#1ac938"/>
        <curve name="/swarm_acc_env/action/twist/twist/angular/x" color="#9467bd"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="10.173783" bottom="-10.251114" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="0.000000" left="92.310000" right="102.310000" bottom="-0.000000"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/twist/twist/angular/y" color="#ff7f0e"/>
        <curve name="/swarm_acc_env/action/twist/twist/angular/y" color="#17becf"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="1.362702" bottom="-1.340278" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="0.000000" left="92.310000" right="102.310000" bottom="-0.000000"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/twist/twist/angular/z" color="#f14cc1"/>
        <curve name="/swarm_acc_env/action/twist/twist/angular/z" color="#bcbd22"/>
@@ -91,28 +91,28 @@
     </DockSplitter>
    </Container>
   </Tab>
-  <Tab containers="1" tab_name="rot">
+  <Tab tab_name="rot" containers="1">
    <Container>
     <DockSplitter orientation="-" count="3" sizes="0.333333;0.333333;0.333333">
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="0.419956" bottom="-0.418409" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="0.100000" left="92.310000" right="102.310000" bottom="-0.100000"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/pose/pose/orientation/roll" color="#1f77b4"/>
        <curve name="/swarm_acc_env/action/pose/pose/orientation/roll" color="#ff7f0e"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="0.537803" bottom="-0.485248" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="0.100000" left="92.310000" right="102.310000" bottom="-0.100000"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/pose/pose/orientation/pitch" color="#d62728"/>
        <curve name="/swarm_acc_env/action/pose/pose/orientation/pitch" color="#f14cc1"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="0.060114" bottom="-0.062698" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="0.100000" left="92.310000" right="102.310000" bottom="-0.100000"/>
        <limitY/>
        <curve name="/swarm_acc_env/odom/pose/pose/orientation/yaw" color="#1ac938"/>
        <curve name="/swarm_acc_env/action/pose/pose/orientation/yaw" color="#9467bd"/>
@@ -121,29 +121,31 @@
     </DockSplitter>
    </Container>
   </Tab>
-  <Tab containers="1" tab_name="a">
+  <Tab tab_name="a" containers="1">
    <Container>
     <DockSplitter orientation="-" count="2" sizes="0.5;0.5">
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="5.593573" bottom="-5.516617" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="8.399443" left="92.310000" right="102.310000" bottom="-8.397182"/>
        <limitY/>
        <curve name="/swarm_acc_env/a_desired/accel/linear/x" color="#17becf"/>
        <curve name="/swarm_acc_env/a_desired_total/accel/linear/x" color="#1f77b4"/>
+       <curve name="/swarm_acc_env/a_desired/accel/angular/x" color="#1f77b4"/>
       </plot>
      </DockArea>
      <DockArea name="...">
-      <plot flip_y="false" flip_x="false" mode="TimeSeries" style="LinesAndDots">
-       <range top="4.136161" bottom="-4.105124" left="129.260000" right="134.260000"/>
+      <plot style="LinesAndDots" flip_x="false" mode="TimeSeries" flip_y="false">
+       <range top="8.399817" left="92.310000" right="102.310000" bottom="-8.397142"/>
        <limitY/>
        <curve name="/swarm_acc_env/a_desired/accel/linear/y" color="#bcbd22"/>
        <curve name="/swarm_acc_env/a_desired_total/accel/linear/y" color="#d62728"/>
+       <curve name="/swarm_acc_env/a_desired/accel/angular/y" color="#d62728"/>
       </plot>
      </DockArea>
     </DockSplitter>
    </Container>
   </Tab>
-  <currentTabIndex index="0"/>
+  <currentTabIndex index="4"/>
  </tabbed_widget>
  <use_relative_time_offset enabled="1"/>
  <!-- - - - - - - - - - - - - - - -->
@@ -168,7 +170,7 @@
    <max_array_size value="100"/>
    <boolean_strings_to_number value="true"/>
    <remove_suffix_from_strings value="true"/>
-   <selected_topics value="/swarm_acc_env/action;/swarm_acc_env/odom;/swarm_acc_env/a_desired;/swarm_acc_env/a_desired_total;/swarm_acc_env/m_desired"/>
+   <selected_topics value="/swarm_acc_env/a_desired;/swarm_acc_env/a_desired_total;/swarm_acc_env/action;/swarm_acc_env/m_desired;/swarm_acc_env/odom"/>
   </plugin>
   <plugin ID="UDP Server"/>
   <plugin ID="WebSocket Server"/>
@@ -187,15 +189,6 @@
  <previouslyLoaded_Streamer name="ROS2 Topic Subscriber"/>
  <!-- - - - - - - - - - - - - - - -->
  <customMathEquations>
-  <snippet name="speed">
-   <global></global>
-   <function>return math.sqrt(value * value + v1 * v1 + v2 * v2)</function>
-   <linked_source>/swarm_acc_env/odom/twist/twist/linear/x</linked_source>
-   <additional_sources>
-    <v1>/swarm_acc_env/odom/twist/twist/linear/y</v1>
-    <v2>/swarm_acc_env/odom/twist/twist/linear/z</v2>
-   </additional_sources>
-  </snippet>
   <snippet name="speed_des">
    <global></global>
    <function>return math.sqrt(value * value + v1 * v1 + v2 * v2)</function>
@@ -203,6 +196,15 @@
    <additional_sources>
     <v1>/swarm_acc_env/action/twist/twist/linear/y</v1>
     <v2>/swarm_acc_env/action/twist/twist/linear/z</v2>
+   </additional_sources>
+  </snippet>
+  <snippet name="speed">
+   <global></global>
+   <function>return math.sqrt(value * value + v1 * v1 + v2 * v2)</function>
+   <linked_source>/swarm_acc_env/odom/twist/twist/linear/x</linked_source>
+   <additional_sources>
+    <v1>/swarm_acc_env/odom/twist/twist/linear/y</v1>
+    <v2>/swarm_acc_env/odom/twist/twist/linear/z</v2>
    </additional_sources>
   </snippet>
  </customMathEquations>
