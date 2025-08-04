@@ -36,32 +36,31 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
 
     # Reward weights
     to_live_reward_weight = 1.0  # 《活着》
-    death_penalty_weight = 1.0
+    death_penalty_weight = 0.0
     approaching_goal_reward_weight = 2.5
-    dist_to_goal_reward_weight = 0.0
     success_reward_weight = 10.0
     time_penalty_weight = 0.0
-    mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
-    # mutual_collision_avoidance_reward_weight = 15.0  # Stage 2
-    max_lin_vel_penalty_weight = 0.0
-    ang_vel_penalty_weight = 0.0
-    action_diff_penalty_weight = 0.1
-    # action_diff_penalty_weight = 0.5  # Stage 3
+    # mutual_collision_avoidance_reward_weight = 0.1  # Stage 1
+    mutual_collision_avoidance_reward_weight = 10.0  # Stage 2
+    ang_vel_penalty_weight = 0.01
+    action_norm_penalty_weight = 0.01
+    action_diff_penalty_weight = 0.01
+    # action_diff_penalty_weight = 0.5  # Stage 2
 
     # Exponential decay factors and tolerances
-    dist_to_goal_scale = 0.5
-    mutual_collision_avoidance_reward_scale = 1.0  # Correspond to safe_dist of 1.5, collide_dist of 0.6
-    # mutual_collision_avoidance_reward_scale = 0.5  # Correspond to safe_dist of 3.0, collide_dist of 0.6
+    mutual_collision_avoidance_reward_scale = 1.3  # Correspond to safe_dist of 1.3, collide_dist of 0.6
     max_lin_vel_penalty_scale = 2.0
 
     fix_range = False
-    flight_range = 5.0
+    flight_range = 3.5
     flight_altitude = 1.0  # Desired flight altitude
-    safe_dist = 1.5
+    safe_dist = 1.3
     collide_dist = 0.6
     goal_reset_delay = 1.0  # Delay for resetting goal after reaching it
     mission_names = ["migration", "crossover", "chaotic"]
-    success_distance_threshold = 0.5  # Distance threshold for considering goal reached
+    mission_prob = [0.0, 0.25, 0.75]
+    # mission_prob = [0.0, 0.0, 1.0]
+    success_distance_threshold = 0.25  # Distance threshold for considering goal reached
     max_sampling_tries = 100  # Maximum number of attempts to sample a valid initial state or goal
     lowpass_filter_cutoff_freq = 2.0
     torque_ctrl_delay_s = 0.02
@@ -105,7 +104,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
         self.action_spaces = {agent: 2 for agent in self.possible_agents}
         self.observation_spaces = {agent: self.history_length * self.transient_observasion_dim for agent in self.possible_agents}
         self.a_max = {agent: 6.6 for agent in self.possible_agents}
-        self.v_max = {agent: 2.3 for agent in self.possible_agents}
+        self.v_max = {agent: 1.5 for agent in self.possible_agents}
 
     # Simulation
     sim: SimulationCfg = SimulationCfg(
@@ -162,6 +161,7 @@ class SwarmAccEnv(DirectMARLEnv):
         self.reset_goal_timer = {agent: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) for agent in self.cfg.possible_agents}
         self.success_dist_thr = torch.zeros(self.num_envs, device=self.device)
 
+        self.mission_prob = torch.tensor(self.cfg.mission_prob, device=self.device)
         # Mission migration params
         self.unified_goal_xy = torch.zeros(self.num_envs, 2, device=self.device)
         # Mission crossover params
@@ -507,8 +507,6 @@ class SwarmAccEnv(DirectMARLEnv):
             approaching_goal_reward = self.prev_dist_to_goals[agent] - dist_to_goal
             self.prev_dist_to_goals[agent] = dist_to_goal
 
-            dist_to_goal_reward = torch.exp(-self.cfg.dist_to_goal_scale * dist_to_goal)
-
             success_i = dist_to_goal < self.success_dist_thr
             # Additional reward when the drone is close to goal
             success_reward = torch.where(success_i, torch.ones(self.num_envs, device=self.device), torch.zeros(self.num_envs, device=self.device))
@@ -519,29 +517,19 @@ class SwarmAccEnv(DirectMARLEnv):
 
             ### ============= Smoothing ============= ###
             ang_vel_reward = -torch.linalg.norm(self.robots[agent].data.root_ang_vel_w, dim=1)
-
-            lin_vel = torch.linalg.norm(self.robots[agent].data.root_lin_vel_w, dim=1)
-            # max_lin_vel_penalty = 1.0 / (1.0 + torch.exp(52.0 * (self.cfg.v_max[agent] - lin_vel)))
-            max_lin_vel_penalty = torch.where(
-                lin_vel > self.cfg.v_max[agent],
-                torch.exp(self.cfg.max_lin_vel_penalty_scale * (lin_vel - self.cfg.v_max[agent])) - 1.0,
-                torch.zeros(self.num_envs, device=self.device),
-            )
-            max_lin_vel_reward = -max_lin_vel_penalty
-
+            action_norm_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1)
             action_diff_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent] - self.prev_a_xy_desired_normalized[agent], dim=1)
 
             reward = {
                 "meaning_to_live": torch.ones(self.num_envs, device=self.device) * self.cfg.to_live_reward_weight * self.step_dt,
                 "approaching_goal": approaching_goal_reward * self.cfg.approaching_goal_reward_weight * self.step_dt,
-                "dist_to_goal": dist_to_goal_reward * self.cfg.dist_to_goal_reward_weight * self.step_dt,
                 "success": success_reward * self.cfg.success_reward_weight * self.step_dt,
                 "death_penalty": death_reward * self.cfg.death_penalty_weight,
                 "time_penalty": time_reward * self.cfg.time_penalty_weight * self.step_dt,
                 "mutual_collision_avoidance": mutual_collision_avoidance_reward[agent] * self.cfg.mutual_collision_avoidance_reward_weight * self.step_dt,
                 ### ============= Smoothing ============= ###
                 "ang_vel_penalty": ang_vel_reward * self.cfg.ang_vel_penalty_weight * self.step_dt,
-                "max_lin_vel_penalty": max_lin_vel_reward * self.cfg.max_lin_vel_penalty_weight * self.step_dt,
+                "action_norm_penalty": action_norm_reward * self.cfg.action_norm_penalty_weight * self.step_dt,
                 "action_diff_penalty": action_diff_reward * self.cfg.action_diff_penalty_weight * self.step_dt,
             }
 
@@ -582,8 +570,7 @@ class SwarmAccEnv(DirectMARLEnv):
             self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
 
         # Randomly assign missions to reset envs
-        self.env_mission_ids[env_ids] = torch.randint(1, len(self.cfg.mission_names), (len(env_ids),), device=self.device)
-        # self.env_mission_ids[env_ids] = 2
+        self.env_mission_ids[env_ids] = torch.multinomial(self.mission_prob, num_samples=len(env_ids), replacement=True)
         mission_0_ids = env_ids[self.env_mission_ids[env_ids] == 0]  # The migration mission
         mission_1_ids = env_ids[self.env_mission_ids[env_ids] == 1]  # The crossover mission
         mission_2_ids = env_ids[self.env_mission_ids[env_ids] == 2]  # The chaotic mission
@@ -621,12 +608,11 @@ class SwarmAccEnv(DirectMARLEnv):
                     )
 
         if len(mission_1_ids) > 0:
-            r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0] - 0.5
+            r_max = self.cfg.flight_range - self.success_dist_thr[mission_1_ids][0] - 0.25
             if self.cfg.fix_range:
-                r_max /= 1.25
                 r_min = r_max
             else:
-                r_min = r_max / 1.5
+                r_min = r_max / 1.0
             self.rand_r[mission_1_ids] = torch.rand(len(mission_1_ids), device=self.device) * (r_max - r_min) + r_min
 
             for idx in mission_1_ids.tolist():
@@ -643,12 +629,11 @@ class SwarmAccEnv(DirectMARLEnv):
                     logger.warning(f"The search for initial positions of the swarm meeting constraints on a radius {r} circle failed, using the final sample #_#")
 
         if len(mission_2_ids) > 0:
-            rg_max = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - 0.5
+            rg_max = self.cfg.flight_range - self.success_dist_thr[mission_2_ids][0] - 0.25
             if self.cfg.fix_range:
-                rg_max /= 1.25
                 rg_min = rg_max
             else:
-                rg_min = rg_max / 1.5
+                rg_min = rg_max / 1.0
             self.rand_rg[mission_2_ids] = torch.rand(len(mission_2_ids), device=self.device) * (rg_max - rg_min) + rg_min
             rand_init_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
             rand_goal_p = torch.zeros(self.num_envs, self.cfg.num_drones, 2, device=self.device)
