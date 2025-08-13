@@ -22,7 +22,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.markers import CUBOID_MARKER_CFG  # isort: skip
-from isaaclab.utils.math import quat_inv, quat_rotate
+from isaaclab.utils.math import quat_inv, quat_apply
 
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils.utils import quat_to_ang_between_z_body_and_z_world
@@ -44,6 +44,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     mutual_collision_avoidance_reward_weight = 40.0  # Stage 2
     ang_vel_penalty_weight = 0.0
     action_norm_penalty_weight = 0.0
+    action_norm_near_goal_penalty_weight = 0.5
     action_diff_penalty_weight = 0.0
 
     # Exponential decay factors and tolerances
@@ -70,10 +71,10 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     max_angle_of_view = 40.0  # Maximum field of view of camera in tilt direction
 
     # Domain randomization
-    enable_domain_randomization = False
-    max_dist_noise_std = 0.5
-    max_bearing_noise_std = 0.01
-    drop_prob = 0.23
+    enable_domain_randomization = True
+    max_dist_noise_std = 1.0
+    max_bearing_noise_std = 0.3
+    drop_prob = 0.3
 
     # Env
     episode_length_s = 30.0
@@ -143,7 +144,7 @@ class SwarmAccEnvCfg(DirectMARLEnvCfg):
     debug_vis = True
     debug_vis_goal = True
     debug_vis_collide_dist = False
-    debug_vis_rel_pos = True
+    debug_vis_rel_pos = False
 
 
 class SwarmAccEnv(DirectMARLEnv):
@@ -440,6 +441,7 @@ class SwarmAccEnv(DirectMARLEnv):
             ### ============= Smoothing ============= ###
             ang_vel_reward = -torch.linalg.norm(self.robots[agent].data.root_ang_vel_w, dim=1)
             action_norm_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1)
+            action_norm_near_goal_reward = torch.where(success_i, -torch.linalg.norm(self.a_xy_desired_normalized[agent], dim=1), torch.zeros(self.num_envs, device=self.device))
             action_diff_reward = -torch.linalg.norm(self.a_xy_desired_normalized[agent] - self.prev_a_xy_desired_normalized[agent], dim=1)
             self.prev_a_xy_desired_normalized[agent] = self.a_xy_desired_normalized[agent].clone()
 
@@ -453,6 +455,7 @@ class SwarmAccEnv(DirectMARLEnv):
                 ### ============= Smoothing ============= ###
                 "ang_vel_penalty": ang_vel_reward * self.cfg.ang_vel_penalty_weight * self.step_dt,
                 "action_norm_penalty": action_norm_reward * self.cfg.action_norm_penalty_weight * self.step_dt,
+                "action_norm_near_goal_penalty": action_norm_near_goal_reward * self.cfg.action_norm_near_goal_penalty_weight * self.step_dt,
                 "action_diff_penalty": action_diff_reward * self.cfg.action_diff_penalty_weight * self.step_dt,
             }
 
@@ -749,7 +752,7 @@ class SwarmAccEnv(DirectMARLEnv):
 
                 # Discard relative observations exceeding maximum elevation field of view
                 sin_max = math.sin(math.radians(self.cfg.max_angle_of_view))
-                relative_positions_b = quat_rotate(quat_inv(self.robots[agent_i].data.root_link_quat_w), relative_positions_w)
+                relative_positions_b = quat_apply(quat_inv(self.robots[agent_i].data.root_link_quat_w), relative_positions_w)
                 abs_rel_pos_z_b = relative_positions_b[:, 2].abs()
                 mask_invisible = (abs_rel_pos_z_b / distances) > sin_max
                 relative_positions_w[mask_invisible] = 0.0
@@ -994,7 +997,9 @@ class SwarmAccEnv(DirectMARLEnv):
         p_odom = state[:3].cpu().numpy()
         q_odom = state[3:7].cpu().numpy()
         v_odom = state[7:10].cpu().numpy()
-        w_odom = state[10:13].cpu().numpy()
+        w_odom_w = state[10:13]
+        w_odom_b = quat_apply(quat_inv(self.robots[agent].data.root_quat_w[env_id]), w_odom_w)
+        w_odom = w_odom_b.cpu().numpy()
 
         odom_msg = Odometry()
         odom_msg.header.stamp = t

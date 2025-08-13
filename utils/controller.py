@@ -2,7 +2,7 @@ from loguru import logger
 import math
 import torch
 
-from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_quat, axis_angle_from_quat
+from isaaclab.utils.math import quat_inv, quat_mul, quat_apply, matrix_from_quat, axis_angle_from_quat
 
 
 class Controller:
@@ -57,7 +57,8 @@ class Controller:
         p_odom = state[:, :3]
         q_odom = state[:, 3:7]
         v_odom = state[:, 7:10]
-        w_odom = state[:, 10:13]
+        w_odom_w = state[:, 10:13]
+        w_odom = quat_apply(quat_inv(q_odom), w_odom_w)
 
         p_desired = action[:, :3]
         v_desired = action[:, 3:6]
@@ -82,13 +83,12 @@ class Controller:
                 q_odom, v_desired, translational_acc, j_desired, yaw_desired, yaw_dot_desired, env_ids
             )
 
-        w_desired = quat_rotate(quat_inv(q_odom), quat_rotate(q_desired, w_desired))
-
-        thrustforce = quat_rotate(q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device))
+        thrustforce = quat_apply(q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device))
         total_des_acc = compute_limited_total_acc_from_thrust_force(thrustforce, self.mass, self.K_min_norm_collec_acc, self.K_max_ang)
         force_desired = total_des_acc * self.mass
 
-        feedback_bodyrates = quat_rotate(q_odom, compute_feedback_control_bodyrates(q_odom, q_desired, self.kPR, self.K_max_bodyrates_feedback))
+        w_desired = quat_apply(quat_inv(q_odom), quat_apply(q_desired, w_desired))
+        feedback_bodyrates = compute_feedback_control_bodyrates(q_odom, q_desired, self.kPR, self.K_max_bodyrates_feedback)
 
         if env_ids is None:
             w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last, self.K_max_angular_acc, self.step_dt)
@@ -98,7 +98,7 @@ class Controller:
             self.w_last[env_ids] = w_desired
 
         thrust_desired, torque_desired = self.bodyrate_control(q_odom, w_odom, force_desired, w_desired)
-        return total_des_acc, thrust_desired, q_desired, w_desired, quat_rotate(quat_inv(q_odom), torque_desired)
+        return total_des_acc, thrust_desired, q_desired, w_desired, torque_desired
 
     def minimum_singularity_flat_with_drag(
         self,

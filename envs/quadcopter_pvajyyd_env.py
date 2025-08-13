@@ -19,6 +19,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_inv, quat_apply
 
 from envs.quadcopter import CRAZYFLIE_CFG, DJI_FPV_CFG  # isort: skip
 from utils.utils import quat_to_ang_between_z_body_and_z_world
@@ -206,7 +207,9 @@ class QuadcopterPVAJYYdEnv(DirectRLEnv):
         p_odom = state[:3].cpu().numpy()
         q_odom = state[3:7].cpu().numpy()
         v_odom = state[7:10].cpu().numpy()
-        w_odom = state[10:13].cpu().numpy()
+        w_odom_w = state[10:13]
+        w_odom_b = quat_apply(quat_inv(self.robot.data.root_quat_w[env_id]), w_odom_w)
+        w_odom = w_odom_b.cpu().numpy()
 
         odom_msg = Odometry()
         odom_msg.header.stamp = t
