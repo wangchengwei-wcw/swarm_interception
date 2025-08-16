@@ -9,14 +9,14 @@ models:
     class: GaussianMixin
     clip_actions: False
     clip_log_std: True
-    min_log_std: -0.22  # std = 0.8
+    # min_log_std: -0.22  # std = 0.8
     # min_log_std: -0.36  # std = 0.7
     # min_log_std: -0.51  # std = 0.6
     # min_log_std: -0.7  # std = 0.5
     # min_log_std: -0.9  # std = 0.4
     # min_log_std: -1.2  # std = 0.3
     # min_log_std: -1.6  # std = 0.2
-    # min_log_std: -2.3  # std = 0.1
+    min_log_std: -2.3  # std = 0.1
     # min_log_std: -3.0  # std = 0.05
     # min_log_std: -4.6  # std = 0.01
     # min_log_std: -7.0  # std = 0.001
