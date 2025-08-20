@@ -52,7 +52,7 @@ import torch
 
 from envs import camera_waypoint_env, quadcopter_pvajyyd_env, quadcopter_waypoint_env
 from isaaclab_tasks.utils import parse_env_cfg
-from isaaclab.utils.math import quat_inv, quat_rotate
+from isaaclab.utils.math import quat_inv, quat_apply
 from utils.minco import MinJerkOpt
 
 

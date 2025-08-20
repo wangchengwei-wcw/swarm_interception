@@ -56,7 +56,7 @@ import torch
 from envs import camera_waypoint_env, quadcopter_waypoint_env, quadcopter_vel_env, quadcopter_acc_env
 from isaaclab.devices import Se3Keyboard
 from isaaclab_tasks.utils import parse_env_cfg
-from isaaclab.utils.math import quat_inv, quat_rotate
+from isaaclab.utils.math import quat_inv, quat_apply
 
 
 def visualize_images_live(images):
@@ -145,7 +145,7 @@ def main():
                     elif delta_pose[4] < 0:
                         p_desired[:, 2] -= args_cli.velocity * dt
 
-                    goal_in_body_frame = quat_rotate(quat_inv(q_odom), p_desired - p_odom)
+                    goal_in_body_frame = quat_apply(quat_inv(q_odom), p_desired - p_odom)
                     norm = goal_in_body_frame.norm(p=2, dim=1, keepdim=True)
                     clip_scale = torch.where(norm > env_cfg.num_pieces * env_cfg.p_max, env_cfg.num_pieces * env_cfg.p_max / (norm + 1e-6), torch.ones_like(norm))
                     goal_in_body_frame *= clip_scale
@@ -201,7 +201,7 @@ def main():
                         elif delta_pose[4] < 0:
                             p_desired[drone][:, 2] -= args_cli.velocity * dt
 
-                        goal_in_body_frame = quat_rotate(quat_inv(q_odom[drone]), p_desired[drone] - p_odom[drone])
+                        goal_in_body_frame = quat_apply(quat_inv(q_odom[drone]), p_desired[drone] - p_odom[drone])
                         norm = goal_in_body_frame.norm(p=2, dim=1, keepdim=True)
                         clip_scale = torch.where(
                             norm > env_cfg.num_pieces * env_cfg.p_max[drone], env_cfg.num_pieces * env_cfg.p_max[drone] / (norm + 1e-6), torch.ones_like(norm)

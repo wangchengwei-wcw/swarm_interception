@@ -2,15 +2,15 @@ from loguru import logger
 import math
 import torch
 
-from isaaclab.utils.math import quat_inv, quat_mul, quat_rotate, matrix_from_quat, axis_angle_from_quat
+from isaaclab.utils.math import quat_inv, quat_mul, quat_apply, matrix_from_quat, axis_angle_from_quat
 
 
 class Controller:
     def __init__(self, step_dt: float, gravity: torch.Tensor, mass: torch.Tensor, inertia: torch.Tensor, num_envs: int):
         # Params
         self.kPp = torch.tensor([3.0, 3.0, 10.0], dtype=torch.float32, device=gravity.device)
-        self.kPv = torch.tensor([3.0, 3.0, 10.0], dtype=torch.float32, device=gravity.device)
-        self.kPR = torch.tensor([10.0, 10.0, 20.0], dtype=torch.float32, device=gravity.device)
+        self.kPv = torch.tensor([0.6, 0.6, 10.0], dtype=torch.float32, device=gravity.device)
+        self.kPR = torch.tensor([20.0, 20.0, 20.0], dtype=torch.float32, device=gravity.device)
         self.kPw = torch.tensor([0.02, 0.0125, 0.0125], dtype=torch.float32, device=gravity.device)
         self.kIw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)
         self.kDw = torch.tensor([0.0, 0.0, 0.0], device=gravity.device)
@@ -21,8 +21,8 @@ class Controller:
 
         self.K_min_norm_collec_acc = 3
         self.K_max_ang = 45
-        self.K_max_bodyrates_feedback = 4
-        self.K_max_angular_acc = 60
+        self.K_max_bodyrates_feedback = 8
+        self.K_max_angular_acc = 120
 
         self.step_dt = step_dt
         self.gravity = gravity.to(dtype=torch.float32)
@@ -34,7 +34,7 @@ class Controller:
         self.w_last = torch.zeros(num_envs, 3, dtype=torch.float32, device=self.gravity.device)
         self.num_envs = num_envs
 
-    def reset(self, env_ids: torch.Tensor | None):
+    def reset(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
             self.w_old = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.gravity.device)
             self.thrust_old = torch.full((self.num_envs,), self.mass * self.gravity.norm(), dtype=torch.float32, device=self.gravity.device)
@@ -48,14 +48,17 @@ class Controller:
             self.w_error_integral[env_ids] = torch.zeros(len(env_ids), 3, device=self.gravity.device)
             self.w_error_prev[env_ids] = torch.zeros(len(env_ids), 3, device=self.gravity.device)
 
-    def get_control(self, state_: torch.Tensor, action_: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_control(
+        self, state_: torch.Tensor, action_: torch.Tensor, env_ids: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         state = state_.clone().to(dtype=torch.float32)
         action = action_.clone().to(dtype=torch.float32)
 
         p_odom = state[:, :3]
         q_odom = state[:, 3:7]
         v_odom = state[:, 7:10]
-        w_odom = state[:, 10:13]
+        w_odom_w = state[:, 10:13]
+        w_odom = quat_apply(quat_inv(q_odom), w_odom_w)
 
         p_desired = action[:, :3]
         v_desired = action[:, 3:6]
@@ -73,20 +76,29 @@ class Controller:
             self.K_max_ang,
         )
 
-        thrust_desired, q_desired, w_desired = self.minimum_singularity_flat_with_drag(q_odom, v_desired, translational_acc, j_desired, yaw_desired, yaw_dot_desired)
-        w_desired = quat_rotate(quat_inv(q_odom), quat_rotate(q_desired, w_desired))
+        if env_ids is None:
+            thrust_desired, q_desired, w_desired = self.minimum_singularity_flat_with_drag(q_odom, v_desired, translational_acc, j_desired, yaw_desired, yaw_dot_desired)
+        else:
+            thrust_desired, q_desired, w_desired = self.minimum_singularity_flat_with_drag(
+                q_odom, v_desired, translational_acc, j_desired, yaw_desired, yaw_dot_desired, env_ids
+            )
 
-        thrustforce = quat_rotate(q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device))
+        thrustforce = quat_apply(q_desired, thrust_desired.unsqueeze(1) * torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=thrust_desired.device))
         total_des_acc = compute_limited_total_acc_from_thrust_force(thrustforce, self.mass, self.K_min_norm_collec_acc, self.K_max_ang)
         force_desired = total_des_acc * self.mass
 
-        feedback_bodyrates = quat_rotate(q_odom, compute_feedback_control_bodyrates(q_odom, q_desired, self.kPR, self.K_max_bodyrates_feedback))
+        w_desired = quat_apply(quat_inv(q_odom), quat_apply(q_desired, w_desired))
+        feedback_bodyrates = compute_feedback_control_bodyrates(q_odom, q_desired, self.kPR, self.K_max_bodyrates_feedback)
 
-        w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last, self.K_max_angular_acc, self.step_dt)
-        self.w_last = w_desired
+        if env_ids is None:
+            w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last, self.K_max_angular_acc, self.step_dt)
+            self.w_last = w_desired
+        else:
+            w_desired = compute_limited_angular_acc(w_desired + feedback_bodyrates, self.w_last[env_ids], self.K_max_angular_acc, self.step_dt)
+            self.w_last[env_ids] = w_desired
 
         thrust_desired, torque_desired = self.bodyrate_control(q_odom, w_odom, force_desired, w_desired)
-        return total_des_acc, thrust_desired, q_desired, w_desired, quat_rotate(quat_inv(q_odom), torque_desired)
+        return total_des_acc, thrust_desired, q_desired, w_desired, torque_desired
 
     def minimum_singularity_flat_with_drag(
         self,
@@ -96,6 +108,7 @@ class Controller:
         j_desired: torch.Tensor,
         yaw_desired: torch.Tensor,
         yaw_dot_desired: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
     ):
         # Drag effect parameters (Drag may cause larger tracking error in aggressive flight during our tests)
         # dv >= dh is required
@@ -113,12 +126,20 @@ class Controller:
             v_desired, a_desired, j_desired, yaw_desired, yaw_dot_desired, self.mass, self.gravity, cp, dv, dh, veps
         )
 
-        thrust_desired = torch.where(success, thrust_desired, self.thrust_old)
-        q_desired = torch.where(success.unsqueeze(1), q_desired, q_odom)
-        w_desired = torch.where(success.unsqueeze(1), w_desired, self.w_old)
+        if env_ids is None:
+            thrust_desired = torch.where(success, thrust_desired, self.thrust_old)
+            q_desired = torch.where(success.unsqueeze(1), q_desired, q_odom)
+            w_desired = torch.where(success.unsqueeze(1), w_desired, self.w_old)
 
-        self.thrust_old = torch.where(success, thrust_desired, self.thrust_old)
-        self.w_old = torch.where(success.unsqueeze(1), w_desired, self.w_old)
+            self.thrust_old = torch.where(success, thrust_desired, self.thrust_old)
+            self.w_old = torch.where(success.unsqueeze(1), w_desired, self.w_old)
+        else:
+            thrust_desired = torch.where(success, thrust_desired, self.thrust_old[env_ids])
+            q_desired = torch.where(success.unsqueeze(1), q_desired, q_odom)
+            w_desired = torch.where(success.unsqueeze(1), w_desired, self.w_old[env_ids])
+
+            self.thrust_old[env_ids] = torch.where(success, thrust_desired, self.thrust_old[env_ids])
+            self.w_old[env_ids] = torch.where(success.unsqueeze(1), w_desired, self.w_old[env_ids])
 
         failed_indices = torch.nonzero(success == False).squeeze()
         for i in failed_indices:
@@ -132,6 +153,7 @@ class Controller:
         w_odom: torch.Tensor,
         force_desired: torch.Tensor,
         w_desired: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
         R = matrix_from_quat(q_odom)
@@ -149,12 +171,20 @@ class Controller:
         )
         w_err = w_desired - w_odom
 
-        self.w_error_integral += w_err * self.step_dt
-        self.w_error_integral = torch.max(torch.min(self.w_error_integral, self.w_error_integral_max), -self.w_error_integral_max)
-        w_err_deriv = (w_err - self.w_error_prev) / self.step_dt
-        self.w_error_prev = w_err.clone()
+        if env_ids is None:
+            self.w_error_integral += w_err * self.step_dt
+            self.w_error_integral = torch.max(torch.min(self.w_error_integral, self.w_error_integral_max), -self.w_error_integral_max)
+            w_err_deriv = (w_err - self.w_error_prev) / self.step_dt
+            self.w_error_prev = w_err.clone()
 
-        torque_desired = feedforward + self.kPw * w_err + self.kIw * self.w_error_integral + self.kDw * w_err_deriv
+            torque_desired = feedforward + self.kPw * w_err + self.kIw * self.w_error_integral + self.kDw * w_err_deriv
+        else:
+            self.w_error_integral[env_ids] += w_err * self.step_dt
+            self.w_error_integral[env_ids] = torch.max(torch.min(self.w_error_integral[env_ids], self.w_error_integral_max), -self.w_error_integral_max)
+            w_err_deriv = (w_err - self.w_error_prev[env_ids]) / self.step_dt
+            self.w_error_prev[env_ids] = w_err.clone()
+
+            torque_desired = feedforward + self.kPw * w_err + self.kIw * self.w_error_integral[env_ids] + self.kDw * w_err_deriv
 
         return thrust_desired, torque_desired
 
@@ -164,11 +194,9 @@ def compute_pid_error_acc(
     p_odom: torch.Tensor, v_odom: torch.Tensor, p_desired: torch.Tensor, v_desired: torch.Tensor, kPp: torch.Tensor, kPv: torch.Tensor
 ) -> torch.Tensor:
 
-    # pos_error = torch.where(torch.isnan(p_desired), torch.zeros_like(p_desired, dtype=torch.float32), torch.clamp(p_desired - p_odom, -1.0, 1.0))
-    pos_error = torch.where(torch.isnan(p_desired), torch.zeros_like(p_desired, dtype=torch.float32), p_desired - p_odom)
+    pos_error = torch.where(torch.isnan(p_desired), torch.zeros_like(p_desired, dtype=torch.float32), torch.clamp(p_desired - p_odom, -1.0, 1.0))
 
-    # vel_error = torch.clamp((v_desired + kPp * pos_error) - v_odom, -1.0, 1.0)
-    vel_error = (v_desired + kPp * pos_error) - v_odom
+    vel_error = torch.clamp((v_desired + kPp * pos_error) - v_odom, -1.0, 1.0)
 
     acc_error = kPv * vel_error
 
