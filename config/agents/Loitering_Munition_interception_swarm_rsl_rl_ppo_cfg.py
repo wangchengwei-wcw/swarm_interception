@@ -20,18 +20,18 @@ class FASTInterceptSwarmPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0, #高斯策略的初始标准差
         # actor_hidden_dims=[256, 256, 128, 64], #Actor 的多层感知机宽度
         # critic_hidden_dims=[256, 256, 128, 64], #Critic 的多层感知机宽度
-        actor_hidden_dims=[512, 512, 256, 256, 128], #Actor 的多层感知机宽度
-        critic_hidden_dims=[512, 512, 256, 256, 128], #Critic 的多层感知机宽度
+        actor_hidden_dims=[256, 256, 128, 128, 64], #Actor 的多层感知机宽度
+        critic_hidden_dims=[256, 256, 128, 128, 64], #Critic 的多层感知机宽度
         activation="elu", #激活函数
     )
     algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0, #值函数损失在总损失中的系数
+        value_loss_coef=0.5, #值函数损失在总损失中的系数
         use_clipped_value_loss=True,
-        clip_param=0.2, #策略比率裁剪阈值，小 → 更新更保守更稳；大 → 学得快但易崩。
+        clip_param=0.20, #策略比率裁剪阈值，小 → 更新更保守更稳；大 → 学得快但易崩。
         entropy_coef=0.0001, #熵正则系数
         num_learning_epochs=5, #每次迭代对同一批数据重复训练的轮数，大 → 学得快但过拟合风险高；小 → 学得慢但稳
-        num_mini_batches=100, #将本迭代 batch 切成多少个 mini-batch
-        learning_rate=1.0e-3, #学习率
+        num_mini_batches=175, #将本迭代 batch 切成多少个 mini-batch
+        learning_rate=1.0e-5, #学习率
         schedule="adaptive", #学习率调度
         gamma=0.99, #折扣因子
         lam=0.95, #GAE(λ) 的 λ
