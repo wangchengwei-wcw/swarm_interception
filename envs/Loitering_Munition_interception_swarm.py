@@ -37,13 +37,13 @@ class FastInterceptionSwarmEnvCfg(DirectRLEnvCfg):
     viewer = ViewerCfg(eye=(3.0, -3.0, 30.0))
 
     # ---------- 数量控制 ----------
-    swarm_size: int = 4                 # 便捷参数：同时设置友机/敌机数量
-    friendly_size: int = 5             # 显式设置（可选）
-    enemy_size: int = 5                # 显式设置（可选）
+    swarm_size: int = 5                 # 便捷参数：同时设置友机/敌机数量
+    friendly_size: int = 6             # 显式设置（可选）
+    enemy_size: int = 6                # 显式设置（可选）
 
     # 敌机出生区域（圆盘）与最小间隔
     debug_vis_enemy = True
-    enemy_height_min = 1.0
+    enemy_height_min = 3.0
     enemy_height_max = 3.0
     enemy_speed = 1.5
     enemy_seek_origin = True
@@ -51,7 +51,7 @@ class FastInterceptionSwarmEnvCfg(DirectRLEnvCfg):
     enemy_goal_radius = 0.5
     enemy_cluster_ring_radius: float = 20.0   # R：以 env 原点为圆心，在半径 R 的圆周上选簇中心
     enemy_cluster_radius: float = 5.0         # r：以簇中心为圆心的小圆半径
-    enemy_min_separation: float = 1.0         # 敌机间最小 XY 间距（放不下会自适应稍微放宽）
+    enemy_min_separation: float = 4.0         # 敌机间最小 XY 间距（放不下会自适应稍微放宽）
 
     # 友方控制/速度范围/位置间隔
     Vm_min = 1.5
@@ -59,6 +59,7 @@ class FastInterceptionSwarmEnvCfg(DirectRLEnvCfg):
     ny_max_g = 3.0
     nz_max_g = 3.0
     formation_spacing = 0.8
+    flight_altitude = 0.2
 
     # 单机观测/动作维度（实际 env * M）
     single_observation_space = 9
@@ -69,15 +70,12 @@ class FastInterceptionSwarmEnvCfg(DirectRLEnvCfg):
     state_space = 0
     action_space = 3
     clip_action = 1.0
-    flight_altitude = 0.2
 
     # 奖励相关
-    capture_radius = 3.0
-    success_distance_threshold = 1.0
     hit_radius = 1.0
-    approach_reward_weight = 1.0
-    hit_reward_weight: float = 2000.0        # 单对首次命中奖励
-
+    centroid_approach_weight = 1.0
+    hit_reward_weight: float = 1000.0        # 单对首次命中奖励
+    heading_align_weight = 0.5
     # 频率
     episode_length_s = 30.0
     physics_freq = 200.0
@@ -86,14 +84,6 @@ class FastInterceptionSwarmEnvCfg(DirectRLEnvCfg):
     decimation = math.ceil(physics_freq / action_freq)
     render_decimation = physics_freq // gui_render_freq
 
-    # —— 可视化数字标签（使用小方块点阵渲染）——
-    label_enable: bool = False          # 开关
-    label_z_offset: float = 0.28       # 标签离机体的高度偏移(m)
-    label_max_envs: int = 8            # 只给前 K 个 env 画，避免太多点
-    label_cell: float = 0.135          # 点阵像素尺寸(方块边长)
-    label_gap: float = 0.015           # 像素之间的间隔
-    label_char_gap: float = 0.02       # 字符之间水平间隔
-    
     # === 投影与射线可视化 ===
     proj_vis_enable: bool = False         # 开关：是否显示投影与射线
     proj_max_envs: int = 8               # 最多可视化的前 K 个 env
@@ -137,21 +127,6 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
     cfg: FastInterceptionSwarmEnvCfg
     _is_closed = True
 
-    DIGIT_BITMAP = {
-        "0": ["111","101","101","101","111"],
-        "1": ["010","110","010","010","111"],
-        "2": ["111","001","111","100","111"],
-        "3": ["111","001","111","001","111"],
-        "4": ["101","101","111","001","001"],
-        "5": ["111","100","111","001","111"],
-        "6": ["111","100","111","101","111"],
-        "7": ["111","001","010","100","100"],
-        "8": ["111","101","111","101","111"],
-        "9": ["111","101","111","001","111"],
-        "F": ["111","100","110","100","100"],
-        "E": ["111","100","110","100","111"],
-    }
-
     def __init__(self, cfg: FastInterceptionSwarmEnvCfg, render_mode: str | None = None, **kwargs):
         # 解析数量
         M = cfg.friendly_size if cfg.friendly_size is not None else cfg.swarm_size
@@ -190,7 +165,6 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         self._nz = torch.zeros(N, self.M, device=dev, dtype=dtype)
 
         # —— 冻结掩码与命中位置（全对全）——
-        # 友机冻结：命中后“该友机”停止；敌机冻结：被击落后“该敌机”停止
         self.friend_frozen = torch.zeros(N, self.M, device=dev, dtype=torch.bool)      # [N,M]
         self.enemy_frozen  = torch.zeros(N, self.E, device=dev, dtype=torch.bool)      # [N,E]
         self.friend_capture_pos = torch.zeros(N, self.M, 3, device=dev, dtype=dtype)   # [N,M,3]
@@ -198,34 +172,33 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
 
         # 统计/动作缓存
         self.episode_sums = {}
-        self.prev_dist = torch.zeros(N, self.M, device=dev, dtype=dtype)   # 存“每友机的最小敌距”
-        self.prev_actions = torch.zeros(N, self.M, self.cfg.single_action_space, device=dev, dtype=dtype)
-
-        # ---- episode 统计缓冲 ----
-        self.episode_sums["approach"]       = torch.zeros(self.num_envs, self.M, device=dev)  # 按友机累计
-        self.episode_sums["near_1m"]        = torch.zeros(self.num_envs, self.M, device=dev)
         self.episode_sums["align"]          = torch.zeros(self.num_envs, self.M, device=dev)  # 记录未加权余弦
-        self.episode_sums["closing_speed"]  = torch.zeros(self.num_envs, self.M, device=dev)
         self.episode_sums["hit_bonus"]      = torch.zeros(self.num_envs,       device=dev)    # 按 env 累计
-        self.episode_sums["success_bonus"]  = torch.zeros(self.num_envs,       device=dev)
 
         # 一次性奖励发放标记
-        self.hit_given_enemy = torch.zeros(N, self.E, device=dev, dtype=torch.bool)    # 敌机是否已发过“命中奖励”
+        self._newly_frozen_friend = torch.zeros(N, self.M, dtype=torch.bool, device=dev)
+        self._newly_frozen_enemy  = torch.zeros(N, self.E, dtype=torch.bool, device=dev)
 
         # 可视化器
         self.friendly_visualizer = None
         self.enemy_visualizer = None
-        self.friendly_digit_marker = None
-        self.enemy_digit_marker = None
-        self._warned_no_text_marker = True  
         # —— 投影/射线可视化器 —— 
         self.centroid_marker = None
         self.ray_marker = None
         self.friend_proj_marker = None
         self.enemy_proj_marker = None
         self.set_debug_vis(self.cfg.debug_vis)
+        self._profile_print = bool(getattr(self.cfg, "profile_print", False)) # 耗时打印开关
 
-    # ----------------- ↓↓↓↓↓工具区↓↓↓↓↓ -----------------
+        # --- 缓存（每步只更新一次）---
+        self._enemy_centroid = torch.zeros(self.num_envs, 3, device=dev, dtype=dtype)      # [N,3]
+        self._enemy_active = torch.zeros(self.num_envs, self.E, device=dev, dtype=torch.bool)  # [N,E]
+        self._enemy_active_any = torch.zeros(self.num_envs, device=dev, dtype=torch.bool)  # [N]
+        self._goal_e = None                       # [N,3] 在 setup/reset 时构建
+        self._axis_hat = torch.zeros(self.num_envs, 3, device=dev, dtype=dtype)  # goal_e->centroid 的单位向量
+    
+    # —————————————————— ↓↓↓↓↓工具区↓↓↓↓↓ ——————————————————
+    # --------- ↓↓↓↓↓友方坐标轴可视化相关↓↓↓↓↓ ---------
     @staticmethod
     def _quat_mul(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
         w1, x1, y1, z1 = q1.unbind(-1)
@@ -264,7 +237,10 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         return self._quat_normalize(q_w)
 
     def _flatten_agents(self, X: torch.Tensor) -> torch.Tensor:
+        """将多维张量 X(通常表示多个批次中多个代理的特征）展平为二维张量，方便后续统一处理所有代理的数据"""
         return X.reshape(-1, X.shape[-1])
+    
+    # --------- ↑↑↑↑↑友方坐标轴可视化相关↑↑↑↑↑ ---------
 
     def close(self):
         if getattr(self, "_is_closed", True):
@@ -272,185 +248,126 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         super().close()
         self._is_closed = True
 
-    def _poisson_disk_in_circle(self,
-                            center_xy: torch.Tensor,
-                            radius: float,
-                            num_points: int,
-                            min_sep: float,
-                            device: torch.device,
-                            batch: int = 64,
-                            max_rounds: int = 256) -> torch.Tensor:
-        """
-        在圆盘内采样 num_points 个点，尽量满足两两距离 >= min_sep
-        若密度过高放不下，会逐渐放宽间隔（每若干轮衰减 5%），最终一定返回 num_points
-        返回形状 [num_points, 2]
-        """
-        if num_points <= 0:
-            return torch.zeros(0, 2, device=device)
+    # --------- ↓↓↓↓↓敌方生成相关↓↓↓↓↓ ---------
+    def _rebuild_goal_e(self):
+        """重构敌方目标点,origins 或 enemy_target_alt 改变时重建一次。"""
+        origins = self.terrain.env_origins  # [N,3]
+        self._goal_e = torch.stack(
+            [origins[:, 0], origins[:, 1], origins[:, 2] + float(self.cfg.enemy_target_alt)],
+            dim=-1
+        )  # [N,3]
 
-        pts = torch.empty(0, 2, device=device)
-        s = max(min_sep, 1e-6)
-        stagnation = 0
+    def _refresh_enemy_cache(self):
+        """每步结束后更新：活敌掩码 + 质心 + 轴向单位向量(goal_e->centroid)"""
+        if self._goal_e is None:
+            self._rebuild_goal_e()
 
-        # 估算容量，过密则预先小幅放宽（经验 packing≈0.7）
-        cap = 0.7 * (math.pi * radius * radius) / (0.25 * math.pi * s * s)  # ≈ 0.7 * 4R^2 / s^2
-        if num_points > cap:
-            scale = math.sqrt(num_points / max(cap, 1e-6))
-            s = s / (1.05 * scale)
+        enemy_active = ~self.enemy_frozen                        # [N,E]
+        e_mask = enemy_active.unsqueeze(-1).float()              # [N,E,1]
+        sum_pos = (self.enemy_pos * e_mask).sum(dim=1)           # [N,3]
+        cnt     = e_mask.sum(dim=1).clamp_min(1.0)               # [N,1]
+        centroid = sum_pos / cnt                                 # [N,3]
 
-        two_pi = 2.0 * math.pi
-        for _ in range(max_rounds):
-            if pts.shape[0] >= num_points:
-                break
+        self._enemy_centroid = centroid
+        self._enemy_active   = enemy_active
+        self._enemy_active_any = enemy_active.any(dim=1)         # [N]
 
-            # 圆盘均匀采样 batch 个候选
-            u = torch.rand(batch, device=device)
-            v = torch.rand(batch, device=device)
-            r = radius * torch.sqrt(u)
-            ang = two_pi * v
-            cand = torch.stack([center_xy[0] + r * torch.cos(ang),
-                                center_xy[1] + r * torch.sin(ang)], dim=-1)  # [B,2]
+        axis = centroid - self._goal_e                           # [N,3] 轴：goal_e -> centroid
+        norm = axis.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        self._axis_hat = axis / norm                             # [N,3]
 
-            if pts.shape[0] == 0:
-                need = num_points
-                take = min(need, cand.shape[0])
-                pts = torch.cat([pts, cand[:take]], dim=0)
-                continue
 
-            d = torch.cdist(cand, pts)             # [B,K]
-            min_d = d.min(dim=1).values
-            mask = min_d >= s
-
-            if mask.any():
-                sel = cand[mask]
-                need = num_points - pts.shape[0]
-                take = min(need, sel.shape[0])
-                pts = torch.cat([pts, sel[:take]], dim=0)
-                stagnation = 0
-            else:
-                stagnation += 1
-
-            # 若持续卡住，逐步放宽间隔
-            if stagnation >= 5:
-                s *= 0.95
-                stagnation = 0
-
-        # 兜底补满
-        if pts.shape[0] < num_points:
-            need = num_points - pts.shape[0]
-            u = torch.rand(need, device=device)
-            v = torch.rand(need, device=device)
-            r = radius * torch.sqrt(u)
-            ang = two_pi * v
-            fill = torch.stack([center_xy[0] + r * torch.cos(ang),
-                                center_xy[1] + r * torch.sin(ang)], dim=-1)
-            pts = torch.cat([pts, fill], dim=0)
-
-        return pts[:num_points, :]
 
     def _spawn_enemy(self, env_ids: torch.Tensor):
         """
-        对每个 env:
-        1) 以 env 原点为圆心、半径 R=cfg.enemy_cluster_ring_radius 的圆周上随机取一点作为“簇中心”；
-        2) 以该簇中心为圆心、半径 r=cfg.enemy_cluster_radius 的小圆内，使用 Poisson 采样生成 E 架敌机；
-        3) 敌机间距尽量 >= cfg.enemy_min_separation(放不下会自适应微放宽)。
+        固定三角阵（等边三角形，尖角朝 +X):
+        - 阵型中心位于 origin + (R_big, 0)，无随机；
+        - 横向间距 d = enemy_min_separation;
+        - 纵向(沿尖角方向的法向)行间距 dy = d*sqrt(3)/2;
+        - 按 1,2,3,... 行数递增放置，直到放满 E;
+        - 高度固定为 (hmin+hmax)/2。
         """
+        import math, time
         dev = self.device
-        E = self.E # 敌机数
-        R_big = float(self.cfg.enemy_cluster_ring_radius)   # 大圆半径 R
-        r_small = float(self.cfg.enemy_cluster_radius)      # 小圆半径 r
-        s_min = float(self.cfg.enemy_min_separation)        # 最小间距
-        hmin = float(self.cfg.enemy_height_min)
-        hmax = float(self.cfg.enemy_height_max)
+        N = env_ids.shape[0]
+        E = self.E
 
-        origins = self.terrain.env_origins[env_ids]  # [N,3]
+        # 参数
+        R_big = float(self.cfg.enemy_cluster_ring_radius)       # 阵型整体沿 +X 的偏移
+        d     = float(self.cfg.enemy_min_separation)            # 横向间距（同一行内相邻敌机的距离）
+        hmin, hmax = float(self.cfg.enemy_height_min), float(self.cfg.enemy_height_max)
+        z_fix = (hmin + hmax) * 0.5
 
-        for local_i, env_id in enumerate(env_ids.tolist()):
-            origin_xy = origins[local_i, :2]  # [2]
-            # 在大圆 R 的“这一圈”上随机采样一个点作为簇中心
-            theta = 2.0 * math.pi * float(torch.rand((), device=dev).item())
-            cx = origin_xy[0] + R_big * math.cos(theta)
-            cy = origin_xy[1] + R_big * math.sin(theta)
-            center = torch.tensor([cx, cy], device=dev)
+        origins = self.terrain.env_origins[env_ids]             # [N,3]
 
-            # 在小圆 r 内做 Poisson 采样（最小间距 s_min）
-            pts = self._poisson_disk_in_circle(center, r_small, E, s_min, device=dev)  # [E,2]
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            t0 = time.perf_counter()
 
-            # 赋值（XY 来自采样；Z 随机在高度区间内）
-            self.enemy_pos[env_id, :, 0] = pts[:, 0]
-            self.enemy_pos[env_id, :, 1] = pts[:, 1]
-            self.enemy_pos[env_id, :, 2] = origins[local_i, 2] + torch.rand(E, device=dev) * (hmax - hmin) + hmin
+        # ---------------- 预生成“局部三角阵” [E,2]（与 env 无关，后续平移到各 env） ----------------
+        # 行距（等边三角形几何）
+        dy = d * math.sqrt(3.0) / 2.0
 
-    def _label_strings_for_friendly(self) -> list[str]:
-        """每个 env 内：F0..F{M-1}；跨 env 重复。长度=N*M。"""
-        return [f"F{i}" for _ in range(self.num_envs) for i in range(self.M)]
+        # 计算需要的行数 R：1+2+...+R >= E
+        # R*(R+1)/2 >= E  -> R = ceil((sqrt(8E+1)-1)/2)
+        R = int(math.ceil((math.sqrt(8.0 * max(E, 1) + 1.0) - 1.0) / 2.0))
 
-    def _label_strings_for_enemy(self) -> list[str]:
-        """每个 env 内：E0..E{E-1}；跨 env 重复。长度=N*E。"""
-        return [f"E{i}" for _ in range(self.num_envs) for i in range(self.E)]
+        xs, ys = [], []
+        count = 0
+        for r in range(R):
+            # 第 r 行（从 0 开始）有 r+1 个点；沿 Y 居中摆放，X 方向为“前后”方向
+            num_in_row = r + 1
+            # 这一行的 X：沿 +X 推进，尖角在 x=0，下一行 x 增加 dy
+            x_r = r * dy
+            # 这一行的 Y：关于 0 对称，间距为 d
+            # 让最左的 y 为 -r*d/2，依次加 d，共 r+1 个
+            y_start = -0.5 * r * d
+            for k in range(num_in_row):
+                if count >= E:
+                    break
+                xs.append(x_r)
+                ys.append(y_start + k * d)
+                count += 1
+            if count >= E:
+                break
 
-    def _digit_points_for_text(self, text: str, base_xy: torch.Tensor,
-                            cell: float, gap: float, char_gap: float,
-                            device: torch.device) -> torch.Tensor:
-        """
-        将字符串渲染为二维点阵（XY 平面，Z=0），中心对齐 base_xy。
-        返回 [K,2]（K 为像素数）。
-        """
-        chars = list(text)
-        pts = []
-        w_char = 3 * cell + 2 * gap
-        h_char = 5 * cell + 4 * gap
-        width_total = len(chars) * w_char + (len(chars) - 1) * char_gap
-        x0 = -0.5 * width_total  # 水平居中
-        for ci, ch in enumerate(chars):
-            bmp = self.DIGIT_BITMAP.get(ch, self.DIGIT_BITMAP["0"])
-            left = x0 + ci * (w_char + char_gap)
-            for r in range(5):
-                row = bmp[r]
-                for c in range(3):
-                    if row[c] == "1":
-                        x = left + c * (cell + gap)
-                        y = (5 - 1 - r) * (cell + gap) - 0.5 * h_char  # 垂直居中
-                        pts.append((x, y))
-        if not pts:
-            return torch.empty(0, 2, device=device, dtype=torch.float32)
-        arr = torch.tensor(pts, dtype=torch.float32, device=device)  # [K,2]
-        return arr + base_xy.unsqueeze(0)
+        # 若恰好填满 E，OK；通常已满足
+        # 将局部阵列形状为 [E,2]
+        local_xy = torch.stack([
+            torch.tensor(xs, dtype=torch.float32, device=dev),
+            torch.tensor(ys, dtype=torch.float32, device=dev)
+        ], dim=-1)  # [E,2]
 
-    def _build_digit_cloud_for_agents(self, agent_pos: torch.Tensor,
-                                    labels: list[str],
-                                    max_envs: int,
-                                    z_offset: float,
-                                    cell: float,
-                                    gap: float,
-                                    char_gap: float) -> torch.Tensor:
-        """
-        为一组代理（[N,M,3] 或 [N,E,3]）构造点阵方块的位置云，返回 [K,3]（K 为所有像素总和）。
-        只为前 max_envs 个 env 生成，防止过重。
-        """
-        dev = self.device
-        N_draw = min(self.num_envs, int(max_envs))
-        pts3_all = []
-        idx_label = 0
-        for ei in range(N_draw):
-            for ai in range(agent_pos.shape[1]):
-                base = agent_pos[ei, ai, :]  # [3]
-                base_xy = base[:2]
-                txt = labels[idx_label]
-                idx_label += 1
-                pts2 = self._digit_points_for_text(txt, base_xy, cell, gap, char_gap, dev)  # [K,2]
-                if pts2.numel() == 0:
-                    continue
-                z = base[2] + float(z_offset)
-                zcol = torch.full((pts2.shape[0], 1), z, device=dev, dtype=torch.float32)
-                pts3 = torch.cat([pts2, zcol], dim=1)  # [K,3]
-                pts3_all.append(pts3)
-        if len(pts3_all) == 0:
-            return torch.empty(0, 3, device=dev, dtype=torch.float32)
-        return torch.cat(pts3_all, dim=0)
+        # 让阵型的几何中心落在 (R_big, 0)：这里把局部坐标以其几何中心为基准再平移
+        # （也可以选择让“尖角”对齐到 (R_big,0)，如需此效果，去掉下面的中心化即可）
+        center_xy = local_xy.mean(dim=0, keepdim=True)          # [1,2]
+        local_xy_centered = local_xy - center_xy                # [E,2]
 
+        # ---------------- 广播到所有 env：平移到 origin+(R_big,0) ----------------
+        # 阵型参考点：每个 env 的原点沿 +X 偏移 R_big
+        centers_xy = torch.stack([
+            origins[:, 0] + R_big,       # x
+            origins[:, 1]                # y
+        ], dim=1)                        # [N,2]
+
+        xy = centers_xy.unsqueeze(1) + local_xy_centered.unsqueeze(0)   # [N,E,2]
+
+        # 高度固定
+        z = origins[:, 2:3].unsqueeze(1) + z_fix                        # [N,1,1] + scalar
+        z = z.expand(-1, E, 1)                                          # [N,E,1]
+
+        enemy_pos = torch.cat([xy, z], dim=-1)                          # [N,E,3]
+        self.enemy_pos[env_ids] = enemy_pos
+
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _spawn_enemy triangle: envs={N}, E={E}, d={d:.3f}, dy={dy:.3f}, R_big={R_big:.3f} -> {dt_ms:.3f} ms")
+
+    # --------- ↑↑↑↑↑敌方生成相关↑↑↑↑↑ ---------
+    # --------- ↓↓↓↓↓可视化相关↓↓↓↓↓ ---------
     def _build_ray_dots(self, c: torch.Tensor, g: torch.Tensor, step: float) -> torch.Tensor:
-        """给定起点c与终点g，按步距step在直线上采样点（含首尾），返回 [K,3]。c,g:[3] on device."""
+        """给定起点c与终点g,按步距step在直线上采样点(含首尾),返回 [K,3]。c,g:[3] on device."""
         dev = self.device
         v = g - c
         L = torch.linalg.norm(v).item()
@@ -464,8 +381,10 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
     def _update_projection_debug_vis(self):
         """在 _apply_action 推进后调用：绘制质心→目标的射线、友/敌在线上的投影点、质心点。
            仅对前 cfg.proj_max_envs 个 env 绘制，避免性能压力。"""
-        if not getattr(self.cfg, "proj_vis_enable", True):
+        if not getattr(self.cfg, "proj_vis_enable", False):
             return
+        if self._goal_e is None:
+            self._rebuild_goal_e()
 
         dev = self.device
         N_draw = int(min(self.num_envs, getattr(self.cfg, "proj_max_envs", 8)))
@@ -478,38 +397,26 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         fr_proj_pts  = []
         en_proj_pts  = []
 
-        origins = self.terrain.env_origins  # [N,3]
-        goal_e = torch.stack(
-            [origins[:, 0], origins[:, 1], origins[:, 2] + float(self.cfg.enemy_target_alt)],
-            dim=-1
-        )  # [N,3]
-
         for ei in range(N_draw):
             # 只在“存在活敌”时绘制
-            enemy_active = (~self.enemy_frozen[ei])  # [E]
+            enemy_active = self._enemy_active[ei]  # [E]
             if not enemy_active.any():
                 continue
 
-            # 敌群质心（仅活敌）
-            e_mask  = enemy_active.float().unsqueeze(-1)       # [E,1]
-            sum_pos = (self.enemy_pos[ei] * e_mask).sum(dim=0) # [3]
-            cnt     = e_mask.sum(dim=0).clamp_min(1e-6)        # [1]
-            centroid = sum_pos / cnt                           # [3]
+            # 敌群质心（缓存）
+            centroid = self._enemy_centroid[ei]    # [3]
 
             # 射线：质心 -> 敌目标点
-            g = goal_e[ei]                                     # [3]
+            g = self._goal_e[ei]                   # [3]
             ray_pts.append(self._build_ray_dots(centroid, g, float(self.cfg.proj_ray_step)))
             centroid_pts.append(centroid.unsqueeze(0))
 
-            # 轴向（单位向量）
-            axis = g - centroid
-            axis_norm = torch.linalg.norm(axis).clamp_min(1e-6)
-            axis_hat = axis / axis_norm                        # [3]
+            # 轴向（单位向量，缓存）
+            axis_hat = self._axis_hat[ei]          # [3]
 
-            # —— 友机投影 ——（可选：仅活友）
+            # —— 友机投影 ——（仅活友）
             friend_active = (~self.friend_frozen[ei])          # [M]
             fr_pos = self.fr_pos[ei]                           # [M,3]
-            # 标量投影 s = (p - c)·axis_hat
             s_f = ((fr_pos - centroid.unsqueeze(0)) * axis_hat.unsqueeze(0)).sum(dim=-1)  # [M]
             p_f = centroid.unsqueeze(0) + s_f.unsqueeze(1) * axis_hat.unsqueeze(0)        # [M,3]
             fr_proj_pts.append(p_f[friend_active])  # 只画活友
@@ -554,32 +461,6 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
                 self.enemy_visualizer = VisualizationMarkers(e_cfg)
                 self.enemy_visualizer.set_visibility(True)
 
-            # —— 方块点阵数字 ——（友方蓝 / 敌方红）
-            if self.cfg.label_enable:
-                if self.friendly_digit_marker is None:
-                    f_cfg = CUBOID_MARKER_CFG.copy()
-                    f_cfg.prim_path = "/Visuals/FriendlyDigitLabels"
-                    f_cfg.markers["cuboid"].size = (
-                        self.cfg.label_cell, self.cfg.label_cell, self.cfg.label_cell
-                    )
-                    f_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(
-                        diffuse_color=(0.1, 0.5, 1.0)
-                    )
-                    self.friendly_digit_marker = VisualizationMarkers(f_cfg)
-                    self.friendly_digit_marker.set_visibility(True)
-
-                if self.enemy_digit_marker is None:
-                    e_cfg = CUBOID_MARKER_CFG.copy()
-                    e_cfg.prim_path = "/Visuals/EnemyDigitLabels"
-                    e_cfg.markers["cuboid"].size = (
-                        self.cfg.label_cell, self.cfg.label_cell, self.cfg.label_cell
-                    )
-                    e_cfg.markers["cuboid"].visual_material = sim_utils.PreviewSurfaceCfg(
-                        diffuse_color=(1.0, 0.2, 0.2)
-                    )
-                    self.enemy_digit_marker = VisualizationMarkers(e_cfg)
-                    self.enemy_digit_marker.set_visibility(True)
-
             # —— 投影 / 射线 ——
             if getattr(self.cfg, "proj_vis_enable", True):
                 # 质心（黄）
@@ -622,10 +503,6 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
                 self.friendly_visualizer.set_visibility(False)
             if self.enemy_visualizer is not None:
                 self.enemy_visualizer.set_visibility(False)
-            if self.friendly_digit_marker is not None:
-                self.friendly_digit_marker.set_visibility(False)
-            if self.enemy_digit_marker is not None:
-                self.enemy_digit_marker.set_visibility(False)
             if self.centroid_marker is not None:
                 self.centroid_marker.set_visibility(False)
             if self.ray_marker is not None:
@@ -645,23 +522,6 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             )
         if self.enemy_visualizer is not None:
             self.enemy_visualizer.visualize(translations=self._flatten_agents(self.enemy_pos))
-        
-        # —— 方块数字同步 ——
-        if self.cfg.label_enable:
-            if self.friendly_digit_marker is not None:
-                f_pts = self._build_digit_cloud_for_agents(
-                    self.fr_pos, self._label_strings_for_friendly(),
-                    self.cfg.label_max_envs, self.cfg.label_z_offset,
-                    self.cfg.label_cell, self.cfg.label_gap, self.cfg.label_char_gap
-                )
-                self.friendly_digit_marker.visualize(translations=f_pts)
-            if self.enemy_digit_marker is not None:
-                e_pts = self._build_digit_cloud_for_agents(
-                    self.enemy_pos, self._label_strings_for_enemy(),
-                    self.cfg.label_max_envs, self.cfg.label_z_offset,
-                    self.cfg.label_cell, self.cfg.label_gap, self.cfg.label_char_gap
-                )
-                self.enemy_digit_marker.visualize(translations=e_pts)
 
     def _setup_scene(self):
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
@@ -670,6 +530,8 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+        # 目标点缓存
+        self._rebuild_goal_e()
     
     def _cuda_sync_if_needed(self):
         """在计时前/后调用。兼容 self.device 是 torch.device 或 str 或不存在。"""
@@ -683,25 +545,23 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
                 if dev.startswith("cuda"):
                     torch.cuda.synchronize(torch.device(dev))
             else:
-                # 没有 self.device：不强行同步；如果你想确保同步当前设备，可改为：
-                # if torch.cuda.is_available(): torch.cuda.synchronize()
                 pass
         except Exception:
-            # 同步失败时不影响主流程
             pass
-
-    # ----------------- ↑↑↑↑↑工具区↑↑↑↑↑ -----------------
-
+    
+    # --------- ↑↑↑↑↑可视化相关↑↑↑↑↑ ---------
+    # —————————————————— ↑↑↑↑↑工具区↑↑↑↑↑ ——————————————————
+    # —————————————————— ↓↓↓↓↓主工作区↓↓↓↓↓ ——————————————————
     def _pre_physics_step(self, actions: torch.Tensor):
         """
         控制输入预处理：
         - 支持 3 种形状的动作： [N, 3*M] / [N, M, 3] / [N, 3](广播到 M)
         - 对已冻结的配对(friend_frozen=True)屏蔽动作，不再对其施加控制
         - 将规范化动作映射到物理量:ny/nz ∈ [-1,1] -> g 值;throttle ∈ [0,1] -> Vm ∈ [Vm_min, Vm_max]
-        - 打印“活跃配对”的平均空速，便于调试
         """
-        self._cuda_sync_if_needed()
-        t0 = time.perf_counter()
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            t0 = time.perf_counter()
 
         if actions is None:
             return
@@ -728,55 +588,85 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         nz = act[..., 1].clamp(-1.0, 1.0)
         throttle = act[..., 2].clamp(0.0, 1.0)     # 油门（归一化）
 
-        # 映射到物理量
+        # 映射到物理量，ny/nz 在物理里表示法向过载指令（单位是“g”，即几倍重力的加速度）。要把无量纲的 [-1,1] 映射成有物理上限的指令区间。ny ∈ [-1,1] 被缩放为 [-ny_max_g, +ny_max_g]（单位：g）
         self._ny = ny * self.cfg.ny_max_g
         self._nz = nz * self.cfg.nz_max_g
         self.Vm = self.cfg.Vm_min + throttle * (self.cfg.Vm_max - self.cfg.Vm_min)
 
-        # --- 仅统计活跃友机的平均空速，便于调试 ---
-        if hasattr(self, "friend_frozen") and self.friend_frozen is not None:
-            active_mask_f = (~self.friend_frozen).float()
-            denom = active_mask_f.sum().clamp_min(1.0)
-            vm_mean_active = (self.Vm * active_mask_f).sum() / denom
-        #     print(f"Vm(mean-active): {vm_mean_active.item():.2f} m/s", end="\r")
-        # else:
-        #     print(f"Vm(mean): {self.Vm.mean().item():.2f} m/s", end="\r")
-
-        #打印时间
-        self._cuda_sync_if_needed()
-        dt_ms = (time.perf_counter() - t0) * 1000.0
-        print(f"[TIME] _pre_physics_step: {dt_ms:.3f} ms")
+        # 打印时间
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _pre_physics_step: {dt_ms:.3f} ms")
 
     def _apply_action(self):
         """
-        每物理步推进(全对全+CCD):
-        1) 仅对“未冻结”的友/敌计算本子步恒速，缓存步首状态；
-        2) 对所有友×敌做连续碰撞检测：解 || d0 + v_rel * (t*dt) || = R,t∈[0,1];
-        3) 在本步内的所有候选命中对中，按“最早命中时间”做一对一匹配（贪心/同时最小）：
-            — 选 t_{i*,j*} 同时是该友机行最小 & 敌机列最小（容差内），避免一敌多友冲突；
-        4) 对匹配命中对：两端冻结，并把抓捕点写入 friend_capture_pos / enemy_capture_pos;
-        5) 推进到步末，对冻结对象覆盖“速度=0,位置=捕获点”；
-        6) 可视化。
+        每个物理步推进一次（步首判定：距离<=1m即命中并冻结):
+        0) 缓存步首状态
+        0.5) 在步首用 fr_pos0/en_pos0 判定并冻结，记录捕获点
+        1) 更新友机姿态与速度（已冻结者速度=0)
+        2) 计算敌机速度（已冻结者速度=0)
+        3) 推进到步末
+        4) 覆盖冻结对象的位置/速度
+        5) 刷新缓存 + 可视化
         """
-        self._cuda_sync_if_needed()
-        t0 = time.perf_counter()
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            t0 = time.perf_counter()
 
         dt = float(self.physics_dt)
-        dev = self.device
-        eps = 1e-12
-        BIG = 1e9
-        TOL = 1e-6
+        self._newly_frozen_friend[:] = False
+        self._newly_frozen_enemy[:]  = False
 
         N, M, E = self.num_envs, self.M, self.E
+        r = float(self.cfg.hit_radius)  # 1.0m
 
         # ---------- 0) 缓存步首状态 ----------
-        fr_pos0 = self.fr_pos.clone()          # [N,M,3]
-        en_pos0 = self.enemy_pos.clone()       # [N,E,3]
-        fz = self.friend_frozen                # [N,M]
-        ez = self.enemy_frozen                 # [N,E]
+        fr_pos0 = self.fr_pos.clone()        # [N,M,3]
+        en_pos0 = self.enemy_pos.clone()     # [N,E,3]
+        fz0 = self.friend_frozen.clone()     # [N,M]
+        ez0 = self.enemy_frozen.clone()      # [N,E]
 
-        # ---------- 1) 计算本步恒速（冻结屏蔽） ----------
-        # 友机角速率/姿态
+        # ---------- 0.5) 步首命中：用 fr_pos0/en_pos0 判定 ----------
+        # 仅考虑“未冻结的友/敌”对
+        active_pair0 = (~fz0).unsqueeze(2) & (~ez0).unsqueeze(1)  # [N,M,E]
+        if active_pair0.any():
+            diff0 = fr_pos0.unsqueeze(2) - en_pos0.unsqueeze(1)   # [N,M,E,3]
+            dist0 = torch.linalg.norm(diff0, dim=-1)              # [N,M,E]
+            hit_pair0 = (dist0 <= r) & active_pair0               # [N,M,E]
+
+            # 命中的友/敌（任一配对命中即算）
+            fr_hit0 = hit_pair0.any(dim=2)  # [N,M]
+            en_hit0 = hit_pair0.any(dim=1)  # [N,E]
+
+            # 本步新冻结标记（用于奖励）
+            newly_fr = (~fz0) & fr_hit0
+            newly_en = (~ez0) & en_hit0
+            self._newly_frozen_friend |= newly_fr # 左右两边只要有一个是true则左边被赋值为true，布尔张量
+            self._newly_frozen_enemy  |= newly_en
+
+            # 敌机捕获点：取步首位置
+            if newly_en.any():
+                self.enemy_capture_pos[newly_en] = en_pos0[newly_en] # 在 PyTorch 里，用一个二维的布尔掩码去索引一个三维张量时，这个掩码会作用在前两个维度上
+
+            # 友机捕获点：在其命中集合里选“最近的敌机”的步首位置。用“敌机索引”去取敌机的位置，再赋值给“这个友机”的捕获点；
+            if newly_fr.any():
+                INF = torch.tensor(float("inf"), device=self.device, dtype=dist0.dtype) # 创建无穷大值，用于屏蔽非命中对的距离
+                dist_masked0 = torch.where(hit_pair0, dist0, INF)      # [N,M,E] 将非命中对的距离置为无穷大，保留命中对的实际距离
+                j_star0 = dist_masked0.argmin(dim=2)                   # [N,M] 沿敌方维度找到每个友方物体命中的最近敌方物体的索引，每个友机对应的“最近命中敌机的下标”
+                batch_idx = torch.arange(N, device=self.device).unsqueeze(1).expand(-1, M)  # [N,M] 创建批次索引张量，形状 [N, M]，用于索引 en_pos0
+                cap_for_friend0 = en_pos0[batch_idx, j_star0, :]       # [N,M,3] 根据 (n, i, j*) 提取最近敌方物体的步首位置
+                self.friend_capture_pos[newly_fr] = cap_for_friend0[newly_fr] # 将新冻结友方物体的捕获位置存储到全局张量中
+
+            # 更新冻结掩码（立即生效，后续推进将不再移动这些体）
+            self.friend_frozen |= fr_hit0
+            self.enemy_frozen  |= en_hit0
+
+        # 用最新冻结掩码（步首后）参与后续动力学
+        fz = self.friend_frozen
+        ez = self.enemy_frozen
+
+        # ---------- 1) 友机姿态/速度（冻结=0） ----------
         cos_th_now = torch.cos(self.theta).clamp_min(1e-6)
         Vm_eff = torch.where(fz, torch.zeros_like(self.Vm), self.Vm)   # 冻结友机速度=0
         Vm_eps = Vm_eff.clamp_min(1e-6)
@@ -799,114 +689,41 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         Vxm = Vm_eff * cos_th * cos_ps
         Vym = Vm_eff * sin_th
         Vzm = -Vm_eff * cos_th * sin_ps
-        V_m = torch.stack([Vxm, Vym, Vzm], dim=-1)               # [N,M,3] (y-up)
-        fr_vel_w_step = y_up_to_z_up(V_m)                        # [N,M,3] (z-up, 本步恒速)
+        V_m = torch.stack([Vxm, Vym, Vzm], dim=-1)          # [N,M,3]
+        fr_vel_w_step = y_up_to_z_up(V_m)                   # [N,M,3]
 
-        # 敌机速度（冻结敌机=0；未冻结目标指向 env 原点+高度）
+        # ---------- 2) 敌机速度（冻结=0） ----------
         if self.cfg.enemy_seek_origin:
-            origins = self.terrain.env_origins                                        # [N,3]
-            goal = torch.stack([origins[:,0], origins[:,1], origins[:,2] + float(self.cfg.enemy_target_alt)], dim=-1)
-            goal = goal.unsqueeze(1).expand(-1, self.E, -1)                           # [N,E,3]
-            to_goal = goal - en_pos0                                                  # [N,E,3]
+            if self._goal_e is None:
+                self._rebuild_goal_e()
+            goal = self._goal_e.unsqueeze(1).expand(-1, self.E, -1)  # [N,E,3] 将目标位置张量 self._goal_e 扩展到与敌方物体数量 self.E 匹配的形状
+            to_goal = goal - en_pos0                                 # [N,E,3]
             en_dir = to_goal / torch.linalg.norm(to_goal, dim=-1, keepdim=True).clamp_min(1e-6)
-            enemy_vel_step = en_dir * float(self.cfg.enemy_speed)                     # [N,E,3]
+            enemy_vel_step = en_dir * float(self.cfg.enemy_speed)    # [N,E,3]
         else:
-            enemy_vel_step = self.enemy_vel                                           # [N,E,3]
+            enemy_vel_step = self.enemy_vel                          # [N,E,3]
         enemy_vel_step = torch.where(ez.unsqueeze(-1), torch.zeros_like(enemy_vel_step), enemy_vel_step)
 
-        # ---------- 2) 全对全连续碰撞检测 ----------
-        r = float(self.cfg.hit_radius)
+        # ---------- 3) 推进到步末 ----------
+        fr_pos1 = fr_pos0 + fr_vel_w_step * dt   # [N,M,3]
+        en_pos1 = en_pos0 + enemy_vel_step * dt  # [N,E,3]
 
-        fr_pos0_ = fr_pos0.unsqueeze(2)            # [N,M,1,3]
-        en_pos0_ = en_pos0.unsqueeze(1)            # [N,1,E,3]
-        d0    = fr_pos0_ - en_pos0_                # [N,M,E,3]
-        v_rel = fr_vel_w_step.unsqueeze(2) - enemy_vel_step.unsqueeze(1)  # [N,M,E,3]
-
-        a = (v_rel * v_rel).sum(dim=-1)            # [N,M,E]
-        b = 2.0 * (d0 * v_rel).sum(dim=-1)         # [N,M,E]
-        c = (d0 * d0).sum(dim=-1) - (r * r)        # [N,M,E]
-
-        a_dt = a * (dt * dt)
-        b_dt = b * dt
-        c_dt = c
-
-        disc = b_dt * b_dt - 4.0 * a_dt * c_dt
-        has_quad = a_dt > eps
-        sqrt_disc = torch.sqrt(torch.clamp(disc, min=0.0))
-
-        t1 = (-b_dt - sqrt_disc) / (2.0 * torch.clamp(a_dt, min=eps))
-        t2 = (-b_dt + sqrt_disc) / (2.0 * torch.clamp(a_dt, min=eps))
-        t_hit_quad = torch.minimum(t1, t2)                         # [N,M,E]
-        inside_start = c_dt <= 0.0
-
-        # 仅对“未冻结友/敌”的对儿有效
-        active_pair = (~fz).unsqueeze(2) & (~ez).unsqueeze(1)      # [N,M,E]
-        valid_quad  = has_quad & (disc >= 0.0) & (t_hit_quad >= 0.0) & (t_hit_quad <= 1.0)
-        hit_ccd = (inside_start | valid_quad) & active_pair
-
-        # 命中时间矩阵（无命中置 INF；起始在内置 0）
-        t_mat = torch.where(hit_ccd, torch.where(inside_start, torch.zeros_like(t_hit_quad), t_hit_quad), 
-                            torch.full_like(t_hit_quad, BIG))
-
-        # ---------- 3) 一对一选择：严格唯一“行/列 argmin”交叉 ----------
-        # 先把非命中的置成 BIG，避免被 argmin 选中
-        t_valid = torch.where(t_mat < BIG, t_mat, torch.full_like(t_mat, BIG))
-
-        # 每友机的唯一最早命中敌机索引 j_star: [N,M]
-        t_friend_min, j_star = t_valid.min(dim=2)
-        # 每敌机的唯一最早被命中友机索引 i_star: [N,E]
-        t_enemy_min,  i_star = t_valid.min(dim=1)
-
-        # 行/列唯一位置的布尔掩码
-        mask_row = torch.zeros_like(t_valid, dtype=torch.bool)          # [N,M,E]
-        mask_row.scatter_(2, j_star.unsqueeze(-1), True)
-
-        mask_col = torch.zeros_like(t_valid, dtype=torch.bool)          # [N,M,E]
-        mask_col.scatter_(1, i_star.unsqueeze(-1), True)
-
-        # 最终一对一匹配
-        selected_pairs = mask_row & mask_col & (t_valid < BIG)          # [N,M,E]
-
-        # ---------- 3.1 命中位置：敌机在 t_hit 处的位置 ----------
-        # 注意：inside_start 的 t_mat 已是 0，非命中是 BIG；t_valid < BIG 的都是有效命中
-        cap_pos = en_pos0_ + enemy_vel_step.unsqueeze(1) * (dt * torch.clamp(t_valid, 0.0, 1.0)).unsqueeze(-1)  # [N,M,E,3]
-
-        # ---------- 3.2 用显式 (n,i,j) 三元组索引来写入与冻结（避免布尔掩码展平顺序不一致） ----------
-        idx = selected_pairs.nonzero(as_tuple=False)   # [K,3], 列为 [n, i, j]
-        if idx.numel() > 0:
-            n_idx = idx[:, 0]
-            i_idx = idx[:, 1]
-            j_idx = idx[:, 2]
-
-            # 取 K 个抓捕点
-            cap_points = cap_pos[n_idx, i_idx, j_idx, :]    # [K,3]
-
-            # 写入抓捕点
-            self.friend_capture_pos[n_idx, i_idx, :] = cap_points
-            self.enemy_capture_pos[n_idx, j_idx, :] = cap_points
-
-            # 冻结命中两端
-            self.friend_frozen[n_idx, i_idx] = True
-            self.enemy_frozen[n_idx, j_idx] = True
-
-        # 同步冻结掩码的局部引用
-        fz = self.friend_frozen
-        ez = self.enemy_frozen
-
-        # ---------- 4) 推进到步末，并覆盖冻结对象 ----------
+        # ---------- 4) 覆盖冻结对象（位置=捕获点, 速度=0） ----------
         self.fr_vel_w = fr_vel_w_step
         self.enemy_vel = enemy_vel_step
+        self.fr_pos = fr_pos1
+        self.enemy_pos = en_pos1
 
-        self.fr_pos = fr_pos0 + fr_vel_w_step * dt
-        self.enemy_pos = en_pos0 + enemy_vel_step * dt
+        if fz.any():
+            self.fr_vel_w[fz] = 0.0
+            self.fr_pos[fz]   = self.friend_capture_pos[fz]
+        if ez.any():
+            self.enemy_vel[ez] = 0.0
+            self.enemy_pos[ez] = self.enemy_capture_pos[ez]
 
-        # 覆盖冻结：速度=0，位置=捕获点
-        self.fr_vel_w[fz] = 0.0
-        self.enemy_vel[ez] = 0.0
-        self.fr_pos[fz] = self.friend_capture_pos[fz]
-        self.enemy_pos[ez] = self.enemy_capture_pos[ez]
+        # ---------- 5) 刷新缓存 + 可视化 ----------
+        self._refresh_enemy_cache() # 更新质心等
 
-        # ---------- 5) 可视化 ----------
         if self.friendly_visualizer is not None:
             fr_quats = self._friendly_world_quats()
             self.friendly_visualizer.visualize(
@@ -915,63 +732,44 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             )
         if self.enemy_visualizer is not None:
             self.enemy_visualizer.visualize(translations=self._flatten_agents(self.enemy_pos))
-        self._update_projection_debug_vis()
-        # 数字标签
-        if self.cfg.label_enable:
-            if self.friendly_digit_marker is not None:
-                f_pts = self._build_digit_cloud_for_agents(
-                    self.fr_pos, self._label_strings_for_friendly(),
-                    self.cfg.label_max_envs, self.cfg.label_z_offset,
-                    self.cfg.label_cell, self.cfg.label_gap, self.cfg.label_char_gap
-                )
-                self.friendly_digit_marker.visualize(translations=f_pts)
-            if self.enemy_digit_marker is not None:
-                e_pts = self._build_digit_cloud_for_agents(
-                    self.enemy_pos, self._label_strings_for_enemy(),
-                    self.cfg.label_max_envs, self.cfg.label_z_offset,
-                    self.cfg.label_cell, self.cfg.label_gap, self.cfg.label_char_gap
-                )
-                self.enemy_digit_marker.visualize(translations=e_pts)
 
-        # ==== 计时打印 ====
-        self._cuda_sync_if_needed()
-        dt_ms = (time.perf_counter() - t0) * 1000.0
-        print(f"[TIME] _apply_action: {dt_ms:.3f} ms")
+        self._update_projection_debug_vis() # 投影可视化
+
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _apply_action (pre-step 1m check): {dt_ms:.3f} ms")
 
     def _get_rewards(self) -> torch.Tensor:
         """
         奖励：
-        - centroid_approach: 鼓励友机靠近“当前存活敌机”的质心（距离减小为正）。仅计未冻结友机。
-        - hit_bonus        : 若任一友机与任一“存活敌机”的距离 <= hit_radius（1m），
-                            则该敌机本回合记为“命中一次”（一次性发放，每敌机只发一次）。
+        - centroid_approach: 鼓励友机靠近“当前存活敌机”的质心（距离减小为正）。仅计未冻结友机
+        - hit_bonus        : 若任一友机与任一“存活敌机”的距离 <= hit_radius(1m)
+                            则该敌机本回合记为“命中一次”（一次性发放，每敌机只发一次）
+        - align_bonus      : 鼓励友机机头/速度方向对准“敌团质心”方向。仅计未冻结友机
         """
-        self._cuda_sync_if_needed()
-        t0 = time.perf_counter()
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            t0 = time.perf_counter()
 
-        eps = 1e-6
-        N, M, E = self.num_envs, self.M, self.E
+        N, M = self.num_envs, self.M
 
         # --- 配置权重 ---
         centroid_w  = float(getattr(self.cfg, "centroid_approach_weight", 1.0))
-        hit_w       = float(getattr(self.cfg, "hit_reward_weight", 2000.0))
-        hit_r       = float(getattr(self.cfg, "hit_radius", 1.0))   # 这里应为 1.0m
+        hit_w       = float(getattr(self.cfg, "hit_reward_weight", 1000.0))
+        # align_w     = float(getattr(self.cfg, "heading_align_weight", 1.0))
 
-        # --- 活跃掩码 ---
-        friend_active     = (~self.friend_frozen)                  # [N,M]
-        enemy_active      = (~self.enemy_frozen)                   # [N,E]
+        # --- 活跃掩码 / 质心（用缓存） ---
+        friend_active     = (~self.friend_frozen)                   # [N,M]
+        enemy_active      = self._enemy_active                      # [N,E]
+        enemy_active_any  = self._enemy_active_any                  # [N]
         friend_active_f   = friend_active.float()
-        enemy_active_any  = enemy_active.any(dim=1)                # [N]
-
-        # --- 质心（仅活敌）---
-        e_mask  = enemy_active.float().unsqueeze(-1)               # [N,E,1]
-        sum_pos = (self.enemy_pos * e_mask).sum(dim=1)             # [N,3]
-        cnt     = e_mask.sum(dim=1).clamp_min(1.0)                 # [N,1]
-        centroid = sum_pos / cnt                                   # [N,3]
+        centroid          = self._enemy_centroid                    # [N,3]
 
         # --- 友机到质心的距离减小 ---
         c = centroid.unsqueeze(1).expand(N, M, 3)                  # [N,M,3]
         diff = c - self.fr_pos                                     # [N,M,3]
-        dist_now = torch.linalg.norm(diff, dim=-1)                 # [N,M]
+        dist_now = torch.linalg.norm(diff, dim=-1)                 # [N,M] 友机与敌方团质心的距离
 
         if (not hasattr(self, "prev_dist_centroid")) or (self.prev_dist_centroid is None) \
         or (self.prev_dist_centroid.shape != dist_now.shape):
@@ -979,46 +777,43 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
 
         # 无活敌 -> 不计逼近（冻结 delta）
         dist_now_safe = torch.where(enemy_active_any.unsqueeze(1), dist_now, self.prev_dist_centroid)
-        d_delta = torch.clamp(self.prev_dist_centroid - dist_now_safe, min=0.0)
-
-        centroid_each = d_delta * friend_active_f                  # [N,M]
+        d_delta_signed = self.prev_dist_centroid - dist_now_safe          # 可能为正或负
+        centroid_each = d_delta_signed * friend_active_f                  # [N,M]
         base_each = centroid_w * centroid_each
-        base_each = base_each * enemy_active_any.unsqueeze(1).float()  # 无活敌 -> 0
-        reward = base_each.sum(dim=1)                               # [N]
-        # 如需按活跃友机数平均，可用：
-        # num_friend_active = friend_active_f.sum(dim=1).clamp_min(1.0)
-        # reward = base_each.sum(dim=1) / num_friend_active
+        reward = base_each.sum(dim=1)                                     # [N]
 
         # --- 命中判定：几何 1m 半径 ---
-        # 全对全距离
-        rel_all  = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)         # [N,M,E,3]
-        dist_all = torch.linalg.norm(rel_all, dim=-1)                              # [N,M,E]
-        # 只对“活跃友 × 活跃敌”考虑命中
-        pair_active = friend_active.unsqueeze(2) & enemy_active.unsqueeze(1)       # [N,M,E]，pair_active[n, m, e] = True 表示第 n 个环境中，第 m 个友机和第 e 个敌机均为活跃。
-        geo_hit_pairs = (dist_all <= hit_r) & pair_active                          # [N,M,E]
-
-        # 按敌机聚合：该敌机是否被任一友机命中
-        hit_now_enemy = geo_hit_pairs.any(dim=1)                                   # [N,E]
-        # 一次性：该敌机此前未奖励过
-        new_hit_enemies = hit_now_enemy & (~self.hit_given_enemy)                  # [N,E]
-        hit_bonus = new_hit_enemies.float().sum(dim=1) * hit_w                     # [N]
+        # --- 命中奖励：以“本步新冻结的敌机”为准
+        new_hits_mask = self._newly_frozen_enemy                          # [N,E]
+        hit_bonus = new_hits_mask.float().sum(dim=1) * hit_w              # [N]
         reward = reward + hit_bonus
-        # 记录已发过命中奖励
-        self.hit_given_enemy |= new_hit_enemies
+
+        # === 朝向对齐奖励：让机头/速度方向对准“敌团质心” ===
+        # to_centroid = self._enemy_centroid.unsqueeze(1) - self.fr_pos      # [N,M,3]
+        # to_centroid = torch.nn.functional.normalize(to_centroid, dim=-1)   # [N,M,3]
+        # vdir = torch.nn.functional.normalize(self.fr_vel_w + 1e-6, dim=-1) # [N,M,3]
+        # align = (to_centroid * vdir).sum(dim=-1).clamp(-1.0, 1.0)          # 余弦 ∈ [-1,1] 两个单位向量的点积等于夹角的余弦值
+
+        # align_bonus = align_w * (align * friend_active.float()).sum(dim=1)
+        # reward = reward + align_bonus
 
         # --- 统计（便于日志可视化）---
         self.episode_sums.setdefault("centroid_approach", torch.zeros_like(centroid_each))
         self.episode_sums.setdefault("hit_bonus",         torch.zeros(self.num_envs, device=self.device, dtype=reward.dtype))
+        # self.episode_sums.setdefault("align_bonus",       torch.zeros(self.num_envs, device=self.device, dtype=reward.dtype))
         self.episode_sums["centroid_approach"] += centroid_each
         self.episode_sums["hit_bonus"]         += hit_bonus
-
+        # self.episode_sums["align_bonus"]       += align_bonus
+        
         # --- 更新缓存 ---
-        self.prev_dist_centroid = dist_now
+        self.prev_dist_centroid = dist_now_safe
 
         # ==== 计时打印 ====
-        self._cuda_sync_if_needed()
-        dt_ms = (time.perf_counter() - t0) * 1000.0
-        print(f"[TIME] _get_rewards: {dt_ms:.3f} ms")
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _get_rewards: {dt_ms:.3f} ms")
+
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1031,29 +826,34 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         5) 友方整体“越线投影”（避免掉头打击）
         6) episode 超时
         """
-        self._cuda_sync_if_needed()
-        t0 = time.perf_counter()
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            t0 = time.perf_counter()
 
         BIG = 1e9
         tol = float(getattr(self.cfg, "overshoot_tol", 0.2))
         r2_goal = float(self.cfg.enemy_goal_radius) ** 2          # 目标半径平方
-        xy_max2 = 300.0 ** 2                                      # 越界半径平方
+        xy_max2 = 20.0 ** 2                                       # 越界半径平方
 
-        # 1) 便宜项：不做 sqrt、不做大广播
+        if self._goal_e is None:
+            self._rebuild_goal_e()
+
+        # 1. 全部被拦截
         success_all_enemies = self.enemy_frozen.all(dim=1)        # [N]
 
+        # 2. 友机 Z 越界
         z = self.fr_pos[..., 2]
-        out_z_any = ((z < 0.0) | (z > 5.5)).any(dim=1)          # [N]
+        out_z_any = ((z < 0.0) | (z > 6.0)).any(dim=1)            # [N]（示例高度限制，可按需调整）
 
-        # XY 越界用平方距离
+        # 3. 友机 XY 越界
         origin_xy = self.terrain.env_origins[:, :2].unsqueeze(1)  # [N,1,2]
         dxy = self.fr_pos[..., :2] - origin_xy                    # [N,M,2]
         out_xy_any = (dxy.square().sum(dim=-1) > xy_max2).any(dim=1)  # [N]
 
-        # 直接用 isfinite，一步搞定 nan/inf
+        # 4. 友机位置无效
         nan_inf_any = ~torch.isfinite(self.fr_pos).all(dim=(1, 2))     # [N]
 
-        # 先默认较重项为 False；仅对“还活着”的 env 再细算
+        # 5. 友机投影越线 / 敌人到达目标
         N = self.num_envs
         device = self.device
         enemy_goal_any = torch.zeros(N, dtype=torch.bool, device=device)
@@ -1061,55 +861,53 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
 
         alive_mask = ~(success_all_enemies | out_z_any | out_xy_any | nan_inf_any)
         if alive_mask.any():
-            idx = alive_mask.nonzero(as_tuple=False).squeeze(-1)       # [K]
+            idx = alive_mask.nonzero(as_tuple=False).squeeze(-1)       # [K] 活跃环境的索引
 
-            # 目标点（建议缓存：如果 origins/alt 不变，可在 __init__/reset 后保存 self._goal_e）
-            origins = self.terrain.env_origins                          # [N,3]
-            goal_e = torch.stack(
-                [origins[:, 0], origins[:, 1], origins[:, 2] + float(self.cfg.enemy_target_alt)],
-                dim=-1
-            )  # [N,3]
-
-            # 2) 敌人到达目标：只算 alive 的环境；仍用平方距离
-            diff_e = self.enemy_pos[idx] - goal_e[idx].unsqueeze(1)     # [K,E,3]
+            # 1) 敌人到达目标：只算 alive 的环境；仍用平方距离
+            diff_e = self.enemy_pos[idx] - self._goal_e[idx].unsqueeze(1)     # [K,E,3]
             enemy_goal_any[idx] = (diff_e.square().sum(dim=-1) < r2_goal).any(dim=1)
 
-            # 3) “越线投影”：只对 alive 且“友/敌都仍有活体”的环境算
+            # 2) “越线投影”：只对 alive 且“友/敌都仍有活体”的环境算
             friend_active = (~self.friend_frozen[idx])                  # [K,M]
-            enemy_active  = (~self.enemy_frozen[idx])                   # [K,E]
+            enemy_active  = self._enemy_active[idx]                     # [K,E]
             have_both = friend_active.any(dim=1) & enemy_active.any(dim=1)
             if have_both.any():
                 k_idx = have_both.nonzero(as_tuple=False).squeeze(-1)   # 子索引
-                # 敌群“活体”质心
-                e_mask = enemy_active[k_idx].unsqueeze(-1).float()      # [K2,E,1]
-                sum_pos = (self.enemy_pos[idx][k_idx] * e_mask).sum(dim=1)   # [K2,3]
-                cnt = e_mask.sum(dim=1).clamp_min(1.0)                  # [K2,1]
-                centroid = sum_pos / cnt
+                # 缓存：质心/单位轴向
+                centroid = self._enemy_centroid[idx][k_idx]             # [K2,3]
+                gk = self._goal_e[idx][k_idx]                           # [K2,3]
+                axis_hat = self._axis_hat[idx][k_idx]                   # [K2,3]
 
-                # 轴：goal_e -> centroid
-                gk = goal_e[idx][k_idx]                                  # [K2,3]
-                axis = centroid - gk                                     # [K2,3]
-                axis_hat = axis / axis.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-
-                # 投影（点乘）：s = (p - g)·axis_hat
+                # s = (p - g) · axis_hat   —— 点到轴的标量投影（以 g 为原点）
                 sf = ((self.fr_pos[idx][k_idx]    - gk.unsqueeze(1)) * axis_hat.unsqueeze(1)).sum(dim=-1)  # [K2,M]
                 se = ((self.enemy_pos[idx][k_idx] - gk.unsqueeze(1)) * axis_hat.unsqueeze(1)).sum(dim=-1)  # [K2,E]
+                # print("sf:", sf)
+                # print("se:", se)
+                # 掩码搭配：
+                # - 友机要取 min → 非活体置 +∞
+                # - 敌机要取 max → 非活体置 -∞
+                INF     = torch.tensor(float("inf"),     dtype=sf.dtype, device=sf.device)
+                NEG_INF = torch.tensor(float("-inf"),    dtype=sf.dtype, device=sf.device)
 
-                BIG_T = torch.tensor(BIG, dtype=sf.dtype, device=sf.device)
-                sf_masked = torch.where(friend_active[k_idx], sf, BIG_T)  # 非活体置 +INF，便于 min 忽略
-                se_masked = torch.where(enemy_active[k_idx],  se, BIG_T)
+                sf_masked_for_min = torch.where(friend_active[k_idx], sf, INF)      # [K2,M]
+                se_masked_for_max = torch.where(enemy_active[k_idx],  se, NEG_INF)  # [K2,E]
 
-                friend_front = sf_masked.min(dim=1).values
-                enemy_front  = se_masked.min(dim=1).values
+                friend_min = sf_masked_for_min.min(dim=1).values    # [K2]  友机最小投影
+                enemy_max  = se_masked_for_max.max(dim=1).values    # [K2]  敌机最大投影
+                # print("friend_min:", friend_min)
+                # print("enemy_max: ", enemy_max)
+                # 你的需求：友机的最小位置 > 敌机的最大位置（留一点容差 tol）
+                # 如果这是“越线/完全越过敌团”的判定：
+                separated = friend_min > (enemy_max + tol)          # [K2], bool
 
-                overshoot = friend_front > (enemy_front - tol)
-                overshoot_any[idx[k_idx]] = overshoot
+                # 回填
+                overshoot_any[idx[k_idx]] = separated
 
-        # 4) 汇总
+        #  汇总
         died = out_z_any | out_xy_any | nan_inf_any | success_all_enemies | enemy_goal_any | overshoot_any
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
-        # 5) 降低 CPU 同步：把统计更新做成“可选且降频”
+        #  降低 CPU 同步：把统计更新做成“可选且降频”
         log_every = int(getattr(self.cfg, "log_termination_every", 1))  # 0 表示关闭
         if log_every and (int(self.episode_length_buf.max().item()) % log_every == 0):
             term = self.extras.setdefault("termination", {})
@@ -1133,9 +931,10 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
                 "time_out":          int(stats[6]),
             })
         # ==== 计时打印 ====
-        self._cuda_sync_if_needed()
-        dt_ms = (time.perf_counter() - t0) * 1000.0
-        print(f"[TIME] _get_dones: {dt_ms:.3f} ms")
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _get_dones: {dt_ms:.3f} ms")
 
         return died, time_out
 
@@ -1150,18 +949,19 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             6) RL 缓存与上一步距离
             7) 可视化
         """
-        self._cuda_sync_if_needed()
-        t0 = time.perf_counter()
-
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            t0 = time.perf_counter()
         if not hasattr(self, "terrain"):
             self._setup_scene()
-
+        if self._goal_e is None:
+            self._rebuild_goal_e()
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
 
         # 初始化变量
-        N = len(env_ids) #需要重置的环境数量
-        M = self.M #友机数量
+        N = len(env_ids) # 需要重置的环境数量
+        M = self.M # 友机数量
         dev = self.device
         origins = self.terrain.env_origins[env_ids]  # [N,3]
 
@@ -1175,17 +975,29 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         self.enemy_frozen[env_ids]  = False
         self.friend_capture_pos[env_ids] = 0.0
         self.enemy_capture_pos[env_ids]  = 0.0
-        self.hit_given_enemy[env_ids]    = False
+        self._newly_frozen_friend[env_ids] = False
+        self._newly_frozen_enemy[env_ids]  = False
 
-        # 友方并排生成
-        spacing = getattr(self.cfg, "formation_spacing", 0.8)
+        # 友方并排生成（固定沿 X 方向）
+        # spacing = getattr(self.cfg, "formation_spacing", 0.8)
+        # idx = torch.arange(M, device=dev).float() - (M - 1) / 2.0
+        # offsets_xy = torch.stack([idx * spacing, torch.zeros_like(idx)], dim=-1)  # [M,2]
+        # offsets_xy = offsets_xy.unsqueeze(0).expand(N, M, 2)                      # [N,M,2]
+        # fr0 = torch.empty(N, M, 3, device=dev)
+        # fr0[..., :2] = origins[:, :2].unsqueeze(1) + offsets_xy
+        # fr0[...,  2] = origins[:,  2].unsqueeze(1) + float(self.cfg.flight_altitude)
+        # self.fr_pos[env_ids] = fr0
+        # self.fr_vel_w[env_ids] = 0.0
+
+        # 友方并排生成（固定沿 Y 方向）
+        spacing = float(getattr(self.cfg, "formation_spacing", 0.8))
         idx = torch.arange(M, device=dev).float() - (M - 1) / 2.0
-        offsets_xy = torch.stack([idx * spacing, torch.zeros_like(idx)], dim=-1)  # [M,2]
+        offsets_xy = torch.stack([torch.zeros_like(idx), idx * spacing], dim=-1)  # [M,2]
         offsets_xy = offsets_xy.unsqueeze(0).expand(N, M, 2)                      # [N,M,2]
         fr0 = torch.empty(N, M, 3, device=dev)
         fr0[..., :2] = origins[:, :2].unsqueeze(1) + offsets_xy
-        fr0[...,  2] = origins[:,  2].unsqueeze(1) + float(self.cfg.flight_altitude)
-        self.fr_pos[env_ids] = fr0
+        fr0[...,  2] = origins[:, 2].unsqueeze(1) + float(self.cfg.flight_altitude)  # [N,1] -> broadcast 到 [N,M]
+        self.fr_pos[env_ids]  = fr0
         self.fr_vel_w[env_ids] = 0.0
 
         # 敌机在圆盘内随机出生（带最小间隔约束）
@@ -1223,7 +1035,7 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         enemy_active   = (~self.enemy_frozen[env_ids])                        # [N,E] 此时通常全 True
         e_mask         = enemy_active.float().unsqueeze(-1)                   # [N,E,1]
         sum_pos        = (self.enemy_pos[env_ids] * e_mask).sum(dim=1)        # [N,3]
-        cnt            = e_mask.sum(dim=1).clamp_min(1.0)                      # [N,1]
+        cnt            = e_mask.sum(dim=1).clamp_min(1.0)                     # [N,1]
         centroid       = sum_pos / cnt                                        # [N,3]
         c              = centroid.unsqueeze(1).expand(-1, self.M, 3)          # [N,M,3]
         dist0          = torch.linalg.norm(c - self.fr_pos[env_ids], dim=-1)  # [N,M]
@@ -1232,19 +1044,8 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             self.prev_dist_centroid = torch.zeros(self.num_envs, self.M, device=self.device)
         self.prev_dist_centroid[env_ids] = dist0
 
-        # RL 缓存（放在 fr_pos/enemy_pos 之后）
-        # prev_dist: 设为“每友机的最小敌距”
-        rel_full = self.enemy_pos[env_ids].unsqueeze(1) - self.fr_pos[env_ids].unsqueeze(2)   # [N,1,E,3] - [N,M,1,3] => [N,M,E,3]
-        dist_full = torch.linalg.norm(rel_full, dim=-1)                                       # [N,M,E]
-        min_dist, _ = dist_full.min(dim=2)                                                    # [N,M]
-
-        if (self.prev_dist is None) or (self.prev_dist.shape != (self.num_envs, self.M)):
-            self.prev_dist = torch.zeros(self.num_envs, self.M, device=self.device)
-        self.prev_dist[env_ids] = min_dist
-
-        if (self.prev_actions is None) or (self.prev_actions.shape != (self.num_envs, self.M, self.cfg.single_action_space)):
-            self.prev_actions = torch.zeros(self.num_envs, self.M, self.cfg.single_action_space, device=self.device)
-        self.prev_actions[env_ids] = 0.0
+        # 刷新缓存（重置后）
+        self._refresh_enemy_cache()
 
         # 可视化
         if self.friendly_visualizer is not None:
@@ -1257,9 +1058,10 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             self.enemy_visualizer.visualize(translations=self._flatten_agents(self.enemy_pos))
 
         # ==== 计时打印 ====
-        self._cuda_sync_if_needed()
-        dt_ms = (time.perf_counter() - t0) * 1000.0
-        print(f"[TIME] _reset_idx: {dt_ms:.3f} ms")
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _reset_idx: {dt_ms:.3f} ms")
 
     def _get_observations(self) -> dict:
         """
@@ -1269,41 +1071,40 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         其中 e_hat_to_all_enemies 会对“已冻结敌机”置零，从而不改变维度。
         最终把 M 个友机的观测串接： [N, M * (6 + 3E)]。
         """
-        self._cuda_sync_if_needed()
-        t0 = time.perf_counter()
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            t0 = time.perf_counter()
 
         eps = 1e-6
         N, M, E = self.num_envs, self.M, self.E
 
-        # 全对全相对向量： enemy - friend  -> [N, M, E, 3] 表示在 N 个环境中，每个友机（共 M 个）到每个敌机（共 E 个）的单位方向向量（每个向量为 3 维）
+        # 全对全相对向量： enemy - friend  -> [N, M, E, 3]
         rel_all = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)                # [N,M,E,3]
         dist_all = torch.linalg.norm(rel_all, dim=-1, keepdim=True).clamp_min(eps)      # [N,M,E,1]
-        e_hat_all = rel_all / dist_all                                                  # [N,M,E,3] 单位向量
+        e_hat_all = rel_all / dist_all                                                  # [N,M,E,3]
 
         # 屏蔽“已冻结敌机”的方向（置零，不改变维度）
         if hasattr(self, "enemy_frozen") and self.enemy_frozen is not None:
             enemy_active = (~self.enemy_frozen).unsqueeze(1).unsqueeze(-1).float()      # [N,1,E,1]
             e_hat_all = e_hat_all * enemy_active
 
-        #（可选）也可把冻结友机的方向置零，通常没必要；如需则解除注释
-        # if hasattr(self, "friend_frozen") and self.friend_frozen is not None:
-        #     friend_active = (~self.friend_frozen).unsqueeze(2).unsqueeze(-1).float()   # [N,M,1,1]
-        #     e_hat_all = e_hat_all * friend_active
-
         # 展平每个友机的所有敌机方向 -> [N,M, 3E]
         e_hat_flat = e_hat_all.reshape(N, M, 3 * E)
 
-        # 每个友机 6 + 3E 维： [pos(3), vel(3), e_hat_to_all_enemies(3E)]
+        # 每个友机 6 + 3E 维
         obs_each = torch.cat([self.fr_pos, self.fr_vel_w, e_hat_flat], dim=-1)          # [N,M, 6+3E]
         # 串接 M 个友机 -> [N, M*(6+3E)]
         obs = obs_each.reshape(N, -1)
+
         # ==== 计时打印 ====
-        self._cuda_sync_if_needed()
-        dt_ms = (time.perf_counter() - t0) * 1000.0
-        print(f"[TIME] _get_observations: {dt_ms:.3f} ms")
+        if self._profile_print:
+            self._cuda_sync_if_needed()
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _get_observations: {dt_ms:.3f} ms")
 
         return {"policy": obs, "odom": obs.clone()}
 
+    # —————————————————— ↑↑↑↑↑主工作区↑↑↑↑↑ ——————————————————
 # ---------------- Gym 注册 ----------------
 from config import agents
 
