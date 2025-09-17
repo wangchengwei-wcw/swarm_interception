@@ -49,7 +49,7 @@ class FastInterceptionSwarmEnvCfg(DirectRLEnvCfg):
     enemy_seek_origin = True
     enemy_target_alt = 3.0
     enemy_goal_radius = 0.5
-    enemy_cluster_ring_radius: float = 20.0   # R：以 env 原点为圆心，在半径 R 的圆周上选簇中心
+    enemy_cluster_ring_radius: float = 25.0   # R：以 env 原点为圆心，在半径 R 的圆周上选簇中心
     enemy_cluster_radius: float = 5.0         # r：以簇中心为圆心的小圆半径
     enemy_min_separation: float = 4.0         # 敌机间最小 XY 间距（放不下会自适应稍微放宽）
 
@@ -189,7 +189,7 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         self.enemy_proj_marker = None
         self.set_debug_vis(self.cfg.debug_vis)
         self._profile_print = bool(getattr(self.cfg, "profile_print", False)) # 耗时打印开关
-
+        self._enemy_centroid_init = torch.zeros(self.num_envs, 3, device=self.device, dtype=self.fr_pos.dtype)
         # --- 缓存（每步只更新一次）---
         self._enemy_centroid = torch.zeros(self.num_envs, 3, device=dev, dtype=dtype)      # [N,3]
         self._enemy_active = torch.zeros(self.num_envs, self.E, device=dev, dtype=torch.bool)  # [N,E]
@@ -276,93 +276,152 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         norm = axis.norm(dim=-1, keepdim=True).clamp_min(1e-6)
         self._axis_hat = axis / norm                             # [N,3]
 
-
-
     def _spawn_enemy(self, env_ids: torch.Tensor):
         """
-        固定三角阵（等边三角形，尖角朝 +X):
-        - 阵型中心位于 origin + (R_big, 0)，无随机；
-        - 横向间距 d = enemy_min_separation;
-        - 纵向(沿尖角方向的法向)行间距 dy = d*sqrt(3)/2;
-        - 按 1,2,3,... 行数递增放置，直到放满 E;
-        - 高度固定为 (hmin+hmax)/2。
+        三种典型“来袭”队形的随机生成（批量 env):
+        - triangle:   等边三角阵（尖角朝前）
+        - wedge:      人字形 / V 阵（两翼展开，尖角朝前）
+        - diamond:    菱形 / Vic
+        每个 env:随机选队形 + 在环上随机中心 + 阵型朝向对准目标 self._goal_e
+        保证阵内最近邻间距 >= cfg.enemy_min_separation
+        写入:self.enemy_pos[env_ids] -> [N,E,3]
         """
-        import math, time
-        dev = self.device
-        N = env_ids.shape[0]
-        E = self.E
-
-        # 参数
-        R_big = float(self.cfg.enemy_cluster_ring_radius)       # 阵型整体沿 +X 的偏移
-        d     = float(self.cfg.enemy_min_separation)            # 横向间距（同一行内相邻敌机的距离）
-        hmin, hmax = float(self.cfg.enemy_height_min), float(self.cfg.enemy_height_max)
-        z_fix = (hmin + hmax) * 0.5
-
-        origins = self.terrain.env_origins[env_ids]             # [N,3]
-
         if self._profile_print:
             self._cuda_sync_if_needed()
             t0 = time.perf_counter()
 
-        # ---------------- 预生成“局部三角阵” [E,2]（与 env 无关，后续平移到各 env） ----------------
-        # 行距（等边三角形几何）
-        dy = d * math.sqrt(3.0) / 2.0
+        # --- 设备与索引准备 ---
+        dev = self.fr_pos.device
+        env_ids = env_ids.to(dtype=torch.long, device=dev)
 
-        # 计算需要的行数 R：1+2+...+R >= E
-        # R*(R+1)/2 >= E  -> R = ceil((sqrt(8E+1)-1)/2)
-        R = int(math.ceil((math.sqrt(8.0 * max(E, 1) + 1.0) - 1.0) / 2.0))
+        origins_all = self.terrain.env_origins
+        if origins_all.device != dev:
+            origins_all = origins_all.to(dev)
+        origins = origins_all[env_ids]  # [N,3]
 
-        xs, ys = [], []
-        count = 0
-        for r in range(R):
-            # 第 r 行（从 0 开始）有 r+1 个点；沿 Y 居中摆放，X 方向为“前后”方向
-            num_in_row = r + 1
-            # 这一行的 X：沿 +X 推进，尖角在 x=0，下一行 x 增加 dy
-            x_r = r * dy
-            # 这一行的 Y：关于 0 对称，间距为 d
-            # 让最左的 y 为 -r*d/2，依次加 d，共 r+1 个
-            y_start = -0.5 * r * d
-            for k in range(num_in_row):
-                if count >= E:
-                    break
-                xs.append(x_r)
-                ys.append(y_start + k * d)
-                count += 1
-            if count >= E:
-                break
+        if self._goal_e is None:
+            self._rebuild_goal_e()
+        goal_e = self._goal_e[env_ids]  # [N,3]
 
-        # 若恰好填满 E，OK；通常已满足
-        # 将局部阵列形状为 [E,2]
-        local_xy = torch.stack([
-            torch.tensor(xs, dtype=torch.float32, device=dev),
-            torch.tensor(ys, dtype=torch.float32, device=dev)
-        ], dim=-1)  # [E,2]
+        N, E = env_ids.shape[0], self.E
+        s_min = float(self.cfg.enemy_min_separation)
+        hmin, hmax = float(self.cfg.enemy_height_min), float(self.cfg.enemy_height_max)
 
-        # 让阵型的几何中心落在 (R_big, 0)：这里把局部坐标以其几何中心为基准再平移
-        # （也可以选择让“尖角”对齐到 (R_big,0)，如需此效果，去掉下面的中心化即可）
-        center_xy = local_xy.mean(dim=0, keepdim=True)          # [1,2]
-        local_xy_centered = local_xy - center_xy                # [E,2]
+        # 敌群中心：以各 env 原点为圆心的环（可抖动）
+        R_center = float(getattr(self.cfg, "enemy_cluster_ring_radius", 8.0))
+        center_jitter = float(getattr(self.cfg, "enemy_center_jitter", 0.0)) # 敌机中心随机抖动
 
-        # ---------------- 广播到所有 env：平移到 origin+(R_big,0) ----------------
-        # 阵型参考点：每个 env 的原点沿 +X 偏移 R_big
-        centers_xy = torch.stack([
-            origins[:, 0] + R_big,       # x
-            origins[:, 1]                # y
-        ], dim=1)                        # [N,2]
+        # -------- 3 种队形模板（局部坐标，以 +X 为“前向”）--------
+        def tmpl_triangle(E, s):
+            # 等边三角形栅格：第 r 行有 r+1 个点，行距 dy = s*sqrt(3)/2，列距 = s
+            if E == 0:
+                return torch.zeros(0, 2, device=dev)
+            dy = s * math.sqrt(3.0) / 2.0
+            xs, ys, cnt = [], [], 0
+            # R 满足 1+2+…+R >= E
+            R = int(math.ceil((math.sqrt(8.0 * E + 1.0) - 1.0) / 2.0))
+            for r in range(R):
+                num_in_row = r + 1
+                x_r = r * dy
+                y_start = -0.5 * r * s
+                for k in range(num_in_row):
+                    xs.append(x_r); ys.append(y_start + k * s)
+                    cnt += 1
+                    if cnt >= E:
+                        xy = torch.stack([torch.tensor(xs, device=dev),
+                                        torch.tensor(ys, device=dev)], dim=-1)
+                        return xy
+            xy = torch.stack([torch.tensor(xs, device=dev),
+                            torch.tensor(ys, device=dev)], dim=-1)
+            return xy[:E]
 
-        xy = centers_xy.unsqueeze(1) + local_xy_centered.unsqueeze(0)   # [N,E,2]
+        def tmpl_wedge(E, s):
+            # 人字形（V 阵）：(0,0) 为尖角，两翼沿 ±45° 展开，步长 s/√2
+            if E == 0:
+                return torch.zeros(0, 2, device=dev)
+            pts = [(0.0, 0.0)]
+            step = s / math.sqrt(2.0)
+            k = 1
+            while len(pts) < E:
+                pts.append(( k * step,  k * step))  # 右上
+                if len(pts) >= E: break
+                pts.append(( k * step, -k * step))  # 右下
+                k += 1
+            return torch.tensor(pts, dtype=torch.float32, device=dev)
 
-        # 高度固定
-        z = origins[:, 2:3].unsqueeze(1) + z_fix                        # [N,1,1] + scalar
-        z = z.expand(-1, E, 1)                                          # [N,E,1]
+        def tmpl_diamond(E, s):
+            # 菱形/Vic：前/左/右/后 4 点；其余向 -X 方向排尾随
+            if E == 0:
+                return torch.zeros(0, 2, device=dev)
+            d = s / math.sqrt(2.0)
+            base = [( d, 0.0), (0.0,  d), (0.0, -d), (-d, 0.0)]
+            if E <= 4:
+                return torch.tensor(base[:E], dtype=torch.float32, device=dev)
+            pts = base[:]
+            k = 1
+            while len(pts) < E:
+                pts.append((-d - k * s, 0.0))
+                k += 1
+            return torch.tensor(pts, dtype=torch.float32, device=dev)
 
-        enemy_pos = torch.cat([xy, z], dim=-1)                          # [N,E,3]
+        # 构建并中心化模板（几何中心在 (0,0)）
+        # templates = []
+        # # for builder in (tmpl_triangle, tmpl_wedge, tmpl_diamond): # 返回该队形在局部坐标系下的平面坐标 xy，形状是 [E, 2]（E 架敌机，每架给一个 (x, y)）
+        #     xy = builder(E, s_min) # 生成某个队形的原始坐标（通常原点附近，间距至少为 s_min）
+        #     xy = xy - xy.mean(dim=0, keepdim=True) # 把几何中心挪到 (0, 0)
+        #     templates.append(xy) # 把该队形的中心化坐标保存起来
+        # templates = torch.stack(templates, dim=0)  # [3,E,2] 把三个 [E, 2] 的队形模板堆叠成一个张量
+        # F = templates.shape[0]  # 3
+
+        # # -------- 给每个环境各自随机挑一种队形，并把队形中心放到一条圆环上的随机位置 --------
+        # f_idx = torch.randint(low=0, high=F, size=(N,), device=dev)     # [N]
+        # local_xy = templates[f_idx, :, :]                               # [N,E,2]
+
+        # 只保留三角阵
+        templates = []
+        for builder in (tmpl_triangle,):   # ← 这里只留一个
+            xy = builder(E, s_min)
+            xy = xy - xy.mean(dim=0, keepdim=True)
+            templates.append(xy)
+        templates = torch.stack(templates, dim=0)  # [1, E, 2]
+        F = templates.shape[0]  # 1
+
+        # 后面这两行依然成立：f_idx∈[0,1)，全为0，相当于选到同一个模板
+        f_idx = torch.randint(low=0, high=F, size=(N,), device=dev)  # 全0
+        local_xy = templates[f_idx, :, :]  # [N, E, 2]
+
+
+        theta = 2.0 * math.pi * torch.rand(N, device=dev)
+        centers = torch.stack([
+            origins[:, 0] + R_center * torch.cos(theta),
+            origins[:, 1] + R_center * torch.sin(theta)
+        ], dim=1)                                                       # [N,2]
+        if center_jitter > 0.0:
+            centers = centers + (torch.rand(N, 2, device=dev) - 0.5) * (2.0 * center_jitter)
+
+        # -------- 将局部 +X 朝向对齐到 center->goal 的方向（面向目标前进）--------
+        goal_xy = goal_e[:, :2]                                         # [N,2]
+        head_vec = goal_xy - centers                                    # [N,2]
+        head = head_vec / head_vec.norm(dim=-1, keepdim=True).clamp_min(1e-8)  # 单位向量
+        c, s = head[:, 0], head[:, 1]                                   # cos, sin
+        # 旋转矩阵：把局部(+X, +Y)旋到 (head_x, head_y) 的朝向平面
+        Rm = torch.stack([torch.stack([c, -s], dim=-1),
+                        torch.stack([s,  c], dim=-1)], dim=1)         # [N,2,2]
+        rotated = torch.matmul(local_xy, Rm.transpose(1, 2))             # [N,E,2]
+
+        xy = centers.unsqueeze(1) + rotated                              # [N,E,2]
+
+        # -------- 高度 --------
+        z = origins[:, 2:3].unsqueeze(1) \
+            + (hmin + torch.rand(N, E, 1, device=dev) * (hmax - hmin))  # => [N,E,1]
+        enemy_pos = torch.cat([xy, z], dim=-1)  # [N,E,3]
+
         self.enemy_pos[env_ids] = enemy_pos
 
         if self._profile_print:
             self._cuda_sync_if_needed()
-            dt_ms = (time.perf_counter() - t0) * 1000.0
-            print(f"[TIME] _spawn_enemy triangle: envs={N}, E={E}, d={d:.3f}, dy={dy:.3f}, R_big={R_big:.3f} -> {dt_ms:.3f} ms")
+            dt = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _spawn_enemy (triangle/wedge/diamond): envs={N}, E={E}, s_min={s_min:.2f}, R={R_center:.2f} -> {dt:.2f} ms")
 
     # --------- ↑↑↑↑↑敌方生成相关↑↑↑↑↑ ---------
     # --------- ↓↓↓↓↓可视化相关↓↓↓↓↓ ---------
@@ -615,13 +674,20 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             t0 = time.perf_counter()
 
         dt = float(self.physics_dt)
-        self._newly_frozen_friend[:] = False
-        self._newly_frozen_enemy[:]  = False
-
+        # # ✅ 只在每个 RL 步的第一个子步清空“本步新冻结”缓冲
+        # print("Sim step counter:", self._sim_step_counter)
+        # print("Decimation:", self.cfg.decimation)
+        # print("is_first_substep:", ((self._sim_step_counter - 1) % self.cfg.decimation) == 0)
+        # print("Newly frozen enemy before:", self._newly_frozen_enemy)
+        is_first_substep = ((self._sim_step_counter - 1) % self.cfg.decimation) == 0
+        if is_first_substep:
+            self._newly_frozen_friend[:] = False
+            self._newly_frozen_enemy[:]  = False
+        # print("Newly frozen enemy after:", self._newly_frozen_enemy)
         N, M, E = self.num_envs, self.M, self.E
         r = float(self.cfg.hit_radius)  # 1.0m
 
-        # ---------- 0) 缓存步首状态 ----------
+        # ---------- 0) 缓存步首状态,0.5)要判断是否命中 ----------
         fr_pos0 = self.fr_pos.clone()        # [N,M,3]
         en_pos0 = self.enemy_pos.clone()     # [N,E,3]
         fz0 = self.friend_frozen.clone()     # [N,M]
@@ -629,19 +695,19 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
 
         # ---------- 0.5) 步首命中：用 fr_pos0/en_pos0 判定 ----------
         # 仅考虑“未冻结的友/敌”对
-        active_pair0 = (~fz0).unsqueeze(2) & (~ez0).unsqueeze(1)  # [N,M,E]
+        active_pair0 = (~fz0).unsqueeze(2) & (~ez0).unsqueeze(1)  # [N,M,E] 可以理解为一个M*E的矩阵，如果友机i与敌机j未冻结，则第i行第j列为True，否则为False
         if active_pair0.any():
             diff0 = fr_pos0.unsqueeze(2) - en_pos0.unsqueeze(1)   # [N,M,E,3]
             dist0 = torch.linalg.norm(diff0, dim=-1)              # [N,M,E]
-            hit_pair0 = (dist0 <= r) & active_pair0               # [N,M,E]
+            hit_pair0 = (dist0 <= r) & active_pair0               # [N,M,E]友机i、敌机j如果满足“未冻结且距离<=r”，则第i行第j列为True，否则为False
 
             # 命中的友/敌（任一配对命中即算）
-            fr_hit0 = hit_pair0.any(dim=2)  # [N,M]
-            en_hit0 = hit_pair0.any(dim=1)  # [N,E]
+            fr_hit0 = hit_pair0.any(dim=2)  # [N,M]对每个友机 i，只要它在任意一个敌机 j 上命中过（该行里有一个 True），fr_hit0[n, i] 就是 True
+            en_hit0 = hit_pair0.any(dim=1)  # [N,E]对每个敌机 j，只要它被任意一个友机 i 命中过（该列里有一个 True），en_hit0[n, j] 就是 True
 
             # 本步新冻结标记（用于奖励）
-            newly_fr = (~fz0) & fr_hit0
-            newly_en = (~ez0) & en_hit0
+            newly_fr = (~fz0) & fr_hit0 # [N, M]
+            newly_en = (~ez0) & en_hit0 # [N, E]
             self._newly_frozen_friend |= newly_fr # 左右两边只要有一个是true则左边被赋值为true，布尔张量
             self._newly_frozen_enemy  |= newly_en
 
@@ -649,11 +715,11 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             if newly_en.any():
                 self.enemy_capture_pos[newly_en] = en_pos0[newly_en] # 在 PyTorch 里，用一个二维的布尔掩码去索引一个三维张量时，这个掩码会作用在前两个维度上
 
-            # 友机捕获点：在其命中集合里选“最近的敌机”的步首位置。用“敌机索引”去取敌机的位置，再赋值给“这个友机”的捕获点；
+            # 友机捕获点：在其命中集合里选“最近的敌机（欧氏距离）”的步首位置。用“敌机索引”去取敌机的位置，再赋值给“这个友机”的捕获点；
             if newly_fr.any():
                 INF = torch.tensor(float("inf"), device=self.device, dtype=dist0.dtype) # 创建无穷大值，用于屏蔽非命中对的距离
                 dist_masked0 = torch.where(hit_pair0, dist0, INF)      # [N,M,E] 将非命中对的距离置为无穷大，保留命中对的实际距离
-                j_star0 = dist_masked0.argmin(dim=2)                   # [N,M] 沿敌方维度找到每个友方物体命中的最近敌方物体的索引，每个友机对应的“最近命中敌机的下标”
+                j_star0 = dist_masked0.argmin(dim=2)                   # [N,M] 沿敌方维度找到每个友方物体命中的最近敌方物体的索引，找到最小的dist0，每个友机对应的“最近命中敌机的下标”
                 batch_idx = torch.arange(N, device=self.device).unsqueeze(1).expand(-1, M)  # [N,M] 创建批次索引张量，形状 [N, M]，用于索引 en_pos0
                 cap_for_friend0 = en_pos0[batch_idx, j_star0, :]       # [N,M,3] 根据 (n, i, j*) 提取最近敌方物体的步首位置
                 self.friend_capture_pos[newly_fr] = cap_for_friend0[newly_fr] # 将新冻结友方物体的捕获位置存储到全局张量中
@@ -776,7 +842,7 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             self.prev_dist_centroid = dist_now.detach().clone()
 
         # 无活敌 -> 不计逼近（冻结 delta）
-        dist_now_safe = torch.where(enemy_active_any.unsqueeze(1), dist_now, self.prev_dist_centroid)
+        dist_now_safe = torch.where(enemy_active_any.unsqueeze(1), dist_now, self.prev_dist_centroid) # 避免“无活敌时的距离/质心未定义”带来的数值问题
         d_delta_signed = self.prev_dist_centroid - dist_now_safe          # 可能为正或负
         centroid_each = d_delta_signed * friend_active_f                  # [N,M]
         base_each = centroid_w * centroid_each
@@ -787,7 +853,9 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         new_hits_mask = self._newly_frozen_enemy                          # [N,E]
         hit_bonus = new_hits_mask.float().sum(dim=1) * hit_w              # [N]
         reward = reward + hit_bonus
-
+        # print("new_hits_mask.float().sum(dim=1):", new_hits_mask.float().sum(dim=1))
+        self._newly_frozen_enemy[:]  = False
+        self._newly_frozen_friend[:] = False
         # === 朝向对齐奖励：让机头/速度方向对准“敌团质心” ===
         # to_centroid = self._enemy_centroid.unsqueeze(1) - self.fr_pos      # [N,M,3]
         # to_centroid = torch.nn.functional.normalize(to_centroid, dim=-1)   # [N,M,3]
@@ -831,27 +899,47 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             t0 = time.perf_counter()
 
         BIG = 1e9
-        tol = float(getattr(self.cfg, "overshoot_tol", 0.2))
+        tol = float(getattr(self.cfg, "overshoot_tol", 0.4))
         r2_goal = float(self.cfg.enemy_goal_radius) ** 2          # 目标半径平方
-        xy_max2 = 20.0 ** 2                                       # 越界半径平方
+        xy_max2 = 25.0 ** 2                                       # 越界半径平方
 
         if self._goal_e is None:
             self._rebuild_goal_e()
 
         # 1. 全部被拦截
         success_all_enemies = self.enemy_frozen.all(dim=1)        # [N]
+        # print("success_all_enemies : ",success_all_enemies)
 
         # 2. 友机 Z 越界
         z = self.fr_pos[..., 2]
         out_z_any = ((z < 0.0) | (z > 6.0)).any(dim=1)            # [N]（示例高度限制，可按需调整）
+        # print("out_z_any : ", out_z_any)
 
         # 3. 友机 XY 越界
         origin_xy = self.terrain.env_origins[:, :2].unsqueeze(1)  # [N,1,2]
         dxy = self.fr_pos[..., :2] - origin_xy                    # [N,M,2]
         out_xy_any = (dxy.square().sum(dim=-1) > xy_max2).any(dim=1)  # [N]
+        # print("out_xy_any : ", out_xy_any)
+
+        # origin_xy = self.terrain.env_origins[:, :2]                     # [N,2]
+        # centroid_xy = self._enemy_centroid[:, :2]                       # [N,2]
+        # center_xy   = 0.5 * (origin_xy + centroid_xy)                   # [N,2]
+        # radius2_env = 0.25 * ((centroid_xy - origin_xy).square().sum(-1))  # [N]
+        # enemy_active_any = self._enemy_active_any                        # [N] bool
+        # radius2_env = torch.where(
+        #     enemy_active_any,
+        #     radius2_env,
+        #     torch.full_like(radius2_env, float("inf"))
+        # )
+        # p_xy   = self.fr_pos[..., :2]                                    # [N,M,2]
+        # diff   = p_xy - center_xy.unsqueeze(1)                           # [N,M,2]
+        # dist2  = (diff * diff).sum(-1)                                   # [N,M]
+        # out_xy_any = dist2 > radius2_env.unsqueeze(1)                      # [N,M]
+        # print("out_xy_any : ", out_xy_any)
 
         # 4. 友机位置无效
         nan_inf_any = ~torch.isfinite(self.fr_pos).all(dim=(1, 2))     # [N]
+        # print("nan_inf_any : ", nan_inf_any)
 
         # 5. 友机投影越线 / 敌人到达目标
         N = self.num_envs
@@ -902,11 +990,13 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
 
                 # 回填
                 overshoot_any[idx[k_idx]] = separated
-
+                # print("overshoot_any:", overshoot_any)
         #  汇总
         died = out_z_any | out_xy_any | nan_inf_any | success_all_enemies | enemy_goal_any | overshoot_any
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-
+        # print("episode_length_buf : ", self.episode_length_buf)
+        # print("max_episode_length : ", self.max_episode_length)
+        # print("time_out : ", time_out)
         #  降低 CPU 同步：把统计更新做成“可选且降频”
         log_every = int(getattr(self.cfg, "log_termination_every", 1))  # 0 表示关闭
         if log_every and (int(self.episode_length_buf.max().item()) % log_every == 0):
@@ -1115,7 +1205,7 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": FastInterceptionSwarmEnvCfg,
         "sb3_cfg_entry_point": f"{agents.__name__}:quadcopter_sb3_ppo_cfg.yaml",
-        "skrl_cfg_entry_point": f"{agents.__name__}:quadcopter_skrl_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.Loitering_Munition_interception_swarm_rsl_rl_ppo_cfg:FASTInterceptSwarmPPORunnerCfg",
+        "skrl_ppo_cfg_entry_point": f"{agents.__name__}:Loitering_Munition_interception_swarm_skrl_ppo_cfg.yaml",
+        # "rsl_rl_cfg_entry_point": f"{agents.__name__}.Loitering_Munition_interception_swarm_rsl_rl_ppo_cfg:FASTInterceptSwarmPPORunnerCfg",
     },
 )

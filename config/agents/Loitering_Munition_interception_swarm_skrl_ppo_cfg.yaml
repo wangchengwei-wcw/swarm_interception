@@ -11,11 +11,13 @@ models:
     clip_log_std: True
     min_log_std: -0.5  # std = 0.5
     max_log_std: 0.18  # std = 1.2
-    initial_log_std: 0.0
+    # min_log_std: -1.5      # ≈ std 0.22
+    # max_log_std: 0.5       # ≈ std 1.65
+    initial_log_std: 0.0 # std = 1.0
     network:
       - name: net
         input: STATES
-        layers: [256, 256, 128, 64]
+        layers: [256, 256, 128, 128, 64]
         activations: elu
     output: ACTIONS
   value:  # see deterministic_model parameters
@@ -24,7 +26,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [256, 256, 128, 64]
+        layers: [256, 256, 128, 128, 64]
         activations: elu
     output: ONE
 
@@ -47,6 +49,7 @@ agent:
   lambda: 0.95
   learning_rate: 1.0e-03
   learning_rate_scheduler: KLAdaptiveLR
+  # learning_rate_scheduler: null
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.016
   state_preprocessor: RunningStandardScaler
@@ -59,7 +62,7 @@ agent:
   ratio_clip: 0.2
   value_clip: 0.2
   clip_predicted_values: True
-  entropy_loss_scale: 0.005
+  entropy_loss_scale: 0.0005
   value_loss_scale: 1.0
   kl_threshold: 0.0
   rewards_shaper_scale: 1.0
@@ -69,12 +72,12 @@ agent:
     directory: ""
     experiment_name: ""
     write_interval: auto
-    checkpoint_interval: 5000
+    checkpoint_interval: 1000
 
 
 # Sequential trainer
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 100000
+  timesteps: 1000000
   environment_info: log
