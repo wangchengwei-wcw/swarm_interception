@@ -201,6 +201,7 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
     # --------- ↓↓↓↓↓友方坐标轴可视化相关↓↓↓↓↓ ---------
     @staticmethod
     def _quat_mul(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+        # q = q1 ⊗ q2,先应用 q2 的旋转，再应用 q1 的旋转
         w1, x1, y1, z1 = q1.unbind(-1)
         w2, x2, y2, z2 = q2.unbind(-1)
         return torch.stack([
@@ -215,14 +216,17 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         return q / torch.linalg.norm(q, dim=-1, keepdim=True).clamp_min(1e-9)
 
     def _qy(self, psi: torch.Tensor) -> torch.Tensor:
+        # 以 Y 轴 为轴、旋转角 psi 的四元数
         half = 0.5 * psi
         return torch.stack([torch.cos(half), torch.zeros_like(psi), torch.sin(half), torch.zeros_like(psi)], dim=-1)
 
     def _qz(self, theta: torch.Tensor) -> torch.Tensor:
+        # 以 Z 轴 为轴、旋转角 theta 的四元数
         half = 0.5 * theta
         return torch.stack([torch.cos(half), torch.zeros_like(theta), torch.zeros_like(theta), torch.sin(half)], dim=-1)
 
     def _qx_plus_90(self, *shape_prefix) -> torch.Tensor:
+        # 围绕 X 轴 +90° 的固定旋转
         cx = math.sqrt(0.5)
         sx = cx
         base = torch.tensor([cx, sx, 0.0, 0.0], device=self.device, dtype=self.fr_pos.dtype)
@@ -232,14 +236,14 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         return base.repeat(rep, 1).reshape(*shape_prefix, 4)
 
     def _friendly_world_quats(self) -> torch.Tensor:
-        q_m = self._quat_mul(self._qy(self.psi_v), self._qz(self.theta))         # [N,M,4]
-        q_w = self._quat_mul(self._qx_plus_90(self.num_envs, self.M), q_m)       # [N,M,4]
+        q_m = self._quat_mul(self._qy(self.psi_v), self._qz(self.theta))         # [N,M,4] 先绕 Z 旋转 theta，再绕 Y 旋转 psi
+        q_w = self._quat_mul(self._qx_plus_90(self.num_envs, self.M), q_m)       # [N,M,4] 把模型姿态整体再绕 X 轴旋转 +90°
         return self._quat_normalize(q_w)
 
     def _flatten_agents(self, X: torch.Tensor) -> torch.Tensor:
         """将多维张量 X(通常表示多个批次中多个代理的特征）展平为二维张量，方便后续统一处理所有代理的数据"""
         return X.reshape(-1, X.shape[-1])
-    
+
     # --------- ↑↑↑↑↑友方坐标轴可视化相关↑↑↑↑↑ ---------
 
     def close(self):
@@ -365,31 +369,29 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             return torch.tensor(pts, dtype=torch.float32, device=dev)
 
         # 构建并中心化模板（几何中心在 (0,0)）
-        # templates = []
-        # # for builder in (tmpl_triangle, tmpl_wedge, tmpl_diamond): # 返回该队形在局部坐标系下的平面坐标 xy，形状是 [E, 2]（E 架敌机，每架给一个 (x, y)）
-        #     xy = builder(E, s_min) # 生成某个队形的原始坐标（通常原点附近，间距至少为 s_min）
-        #     xy = xy - xy.mean(dim=0, keepdim=True) # 把几何中心挪到 (0, 0)
-        #     templates.append(xy) # 把该队形的中心化坐标保存起来
-        # templates = torch.stack(templates, dim=0)  # [3,E,2] 把三个 [E, 2] 的队形模板堆叠成一个张量
-        # F = templates.shape[0]  # 3
-
-        # # -------- 给每个环境各自随机挑一种队形，并把队形中心放到一条圆环上的随机位置 --------
-        # f_idx = torch.randint(low=0, high=F, size=(N,), device=dev)     # [N]
-        # local_xy = templates[f_idx, :, :]                               # [N,E,2]
-
-        # 只保留三角阵
         templates = []
-        for builder in (tmpl_triangle,):   # ← 这里只留一个
-            xy = builder(E, s_min)
-            xy = xy - xy.mean(dim=0, keepdim=True)
-            templates.append(xy)
-        templates = torch.stack(templates, dim=0)  # [1, E, 2]
-        F = templates.shape[0]  # 1
+        for builder in (tmpl_triangle, tmpl_wedge, tmpl_diamond): # 返回该队形在局部坐标系下的平面坐标 xy，形状是 [E, 2]（E 架敌机，每架给一个 (x, y)）
+            xy = builder(E, s_min) # 生成某个队形的原始坐标（通常原点附近，间距至少为 s_min）
+            xy = xy - xy.mean(dim=0, keepdim=True) # 把几何中心挪到 (0, 0)
+            templates.append(xy) # 把该队形的中心化坐标保存起来
+        templates = torch.stack(templates, dim=0)  # [3,E,2] 把三个 [E, 2] 的队形模板堆叠成一个张量
+        F = templates.shape[0]  # 3
 
-        # 后面这两行依然成立：f_idx∈[0,1)，全为0，相当于选到同一个模板
-        f_idx = torch.randint(low=0, high=F, size=(N,), device=dev)  # 全0
-        local_xy = templates[f_idx, :, :]  # [N, E, 2]
+        # -------- 给每个环境各自随机挑一种队形，并把队形中心放到一条圆环上的随机位置 --------
+        f_idx = torch.randint(low=0, high=F, size=(N,), device=dev)     # [N]
+        local_xy = templates[f_idx, :, :]                               # [N,E,2]
 
+        # # 只保留三角阵
+        # templates = []
+        # for builder in (tmpl_triangle,):
+        #     xy = builder(E, s_min)
+        #     xy = xy - xy.mean(dim=0, keepdim=True)
+        #     templates.append(xy)
+        # templates = torch.stack(templates, dim=0)  # [1, E, 2]
+        # F = templates.shape[0]  # 1
+
+        # f_idx = torch.randint(low=0, high=F, size=(N,), device=dev)  # 全0
+        # local_xy = templates[f_idx, :, :]  # [N, E, 2]
 
         theta = 2.0 * math.pi * torch.rand(N, device=dev)
         centers = torch.stack([
@@ -921,22 +923,6 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         out_xy_any = (dxy.square().sum(dim=-1) > xy_max2).any(dim=1)  # [N]
         # print("out_xy_any : ", out_xy_any)
 
-        # origin_xy = self.terrain.env_origins[:, :2]                     # [N,2]
-        # centroid_xy = self._enemy_centroid[:, :2]                       # [N,2]
-        # center_xy   = 0.5 * (origin_xy + centroid_xy)                   # [N,2]
-        # radius2_env = 0.25 * ((centroid_xy - origin_xy).square().sum(-1))  # [N]
-        # enemy_active_any = self._enemy_active_any                        # [N] bool
-        # radius2_env = torch.where(
-        #     enemy_active_any,
-        #     radius2_env,
-        #     torch.full_like(radius2_env, float("inf"))
-        # )
-        # p_xy   = self.fr_pos[..., :2]                                    # [N,M,2]
-        # diff   = p_xy - center_xy.unsqueeze(1)                           # [N,M,2]
-        # dist2  = (diff * diff).sum(-1)                                   # [N,M]
-        # out_xy_any = dist2 > radius2_env.unsqueeze(1)                      # [N,M]
-        # print("out_xy_any : ", out_xy_any)
-
         # 4. 友机位置无效
         nan_inf_any = ~torch.isfinite(self.fr_pos).all(dim=(1, 2))     # [N]
         # print("nan_inf_any : ", nan_inf_any)
@@ -1155,7 +1141,7 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         """
-        观测（固定维度；不依赖编号配对）：
+        集中式观测：
         对每个友机，拼接：
             [ fr_pos(3) | fr_vel_w(3) | e_hat_to_all_enemies(3*E) ]
         其中 e_hat_to_all_enemies 会对“已冻结敌机”置零，从而不改变维度。
@@ -1169,16 +1155,16 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         N, M, E = self.num_envs, self.M, self.E
 
         # 全对全相对向量： enemy - friend  -> [N, M, E, 3]
-        rel_all = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)                # [N,M,E,3]
-        dist_all = torch.linalg.norm(rel_all, dim=-1, keepdim=True).clamp_min(eps)      # [N,M,E,1]
-        e_hat_all = rel_all / dist_all                                                  # [N,M,E,3]
+        rel_all = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)                # [N,M,E,3] 从 A 到 B 的箭头
+        dist_all = torch.linalg.norm(rel_all, dim=-1, keepdim=True).clamp_min(eps)      # [N,M,E,1] 箭头长度
+        e_hat_all = rel_all / dist_all                                                  # [N,M,E,3] 只保留箭头方向、去掉长度
 
         # 屏蔽“已冻结敌机”的方向（置零，不改变维度）
         if hasattr(self, "enemy_frozen") and self.enemy_frozen is not None:
             enemy_active = (~self.enemy_frozen).unsqueeze(1).unsqueeze(-1).float()      # [N,1,E,1]
             e_hat_all = e_hat_all * enemy_active
 
-        # 展平每个友机的所有敌机方向 -> [N,M, 3E]
+        # 展平每个友机的所有敌机方向 -> [N,M, 3E],把每个友机看到的 E 个敌机方向[E,3]按顺序拼平为[3E]
         e_hat_flat = e_hat_all.reshape(N, M, 3 * E)
 
         # 每个友机 6 + 3E 维
