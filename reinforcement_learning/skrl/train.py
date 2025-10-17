@@ -16,14 +16,13 @@ import os
 import sys
 from isaaclab.app import AppLauncher
 
-
 # Add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with skrl.")
 parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint;L_M_interception_swarm_distributed; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel;FAST-Tracking;FAST-Intercept-Swarm; FAST-Swarm-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1000, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
@@ -57,9 +56,13 @@ elif args_cli.task not in [
     "FAST-Swarm-Acc",
     "FAST-Swarm-Vel",
     "FAST-Swarm-Waypoint",
+    "FAST-Tracking",
+    "FAST-Intercept-Swarm",
+    "FAST-Intercept-Swarm-Test",
+    "FAST-Intercept-Swarm-Distributed",
 ]:
     raise ValueError(
-        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel;FAST-Tracking;FAST-Intercept-Swarm;L_M_interception_swarm_distributed; FAST-Swarm-Waypoint."
     )
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -103,7 +106,7 @@ from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_acc_env, swarm_vel_env, swarm_waypoint_env
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_acc_env, swarm_vel_env, fast_tracking, swarm_waypoint_env, Loitering_Munition_interception_swarm, L_M_i_swarm_test,L_M_interception_swarm_distributed 
 
 # Config shortcuts
 algorithm = args_cli.algorithm.lower()
@@ -133,8 +136,9 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     # Configure the ML framework into the global skrl variable
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
-
-    log_root_path = os.path.abspath(os.path.join("outputs", "skrl", args_cli.task, "flowline"))
+    
+    log_root_path = os.path.abspath(os.path.join("/home/wcw/swarm_rl/outputs", "skrl", args_cli.task, "flowline"))
+    # log_root_path = os.path.abspath(os.path.join("outputs", "skrl", args_cli.task, "flowline"))
     run_info = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
     # Set directory into agent config
     agent_cfg["agent"]["experiment"]["directory"] = log_root_path
@@ -174,6 +178,15 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
         env_src_file = "swarm_vel_env.py"
     elif args_cli.task == "FAST-Swarm-Waypoint":
         env_src_file = "swarm_waypoint_env.py"
+    elif args_cli.task == "FAST-Tracking":
+        env_src_file = "fast_tracking.py"
+    elif args_cli.task == "FAST-Intercept-Swarm":
+        env_src_file = "Loitering_Munition_interception_swarm.py"
+    elif args_cli.task == "FAST-Intercept-Swarm-Test":
+        env_src_file = "L_M_i_swarm_test.py"
+    elif args_cli.task == "FAST-Intercept-Swarm-Distributed":
+        env_src_file = "L_M_interception_swarm_distributed.py"
+    
     shutil.copy2(os.path.join(env_dir, env_src_file), os.path.join(dump_env_src_dir, env_src_file))
     os.chmod(os.path.join(dump_env_src_dir, env_src_file), 0o444)
 

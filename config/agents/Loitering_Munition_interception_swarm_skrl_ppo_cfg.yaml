@@ -9,15 +9,19 @@ models:
     class: GaussianMixin
     clip_actions: False
     clip_log_std: True
-    min_log_std: -0.5  # std = 0.5
-    max_log_std: 0.18  # std = 1.2
-    # min_log_std: -1.5      # ≈ std 0.22
-    # max_log_std: 0.5       # ≈ std 1.65
-    initial_log_std: 0.0 # std = 1.0
+    # min_log_std: -4.6  # std = 0.01
+    # min_log_std: -2.0    # std ≈ 0.135
+    min_log_std: -0.5      # ≈ std 0.61
+    # min_log_std: -1.2      # ≈ std 0.30
+    # min_log_std: -0.7
+    # max_log_std:  -0.1  # std = 0.9
+    max_log_std:  0.18  # std = 1.2
+    # initial_log_std: 0.0 # std = 1.0
+    initial_log_std: -0.3
     network:
       - name: net
         input: STATES
-        layers: [256, 256, 128, 128, 64]
+        layers: [128, 128, 64, 32]
         activations: elu
     output: ACTIONS
   value:  # see deterministic_model parameters
@@ -26,7 +30,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [256, 256, 128, 128, 64]
+        layers: [128, 128, 64, 32]
         activations: elu
     output: ONE
 
@@ -42,16 +46,16 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
   class: PPO
-  rollouts: 150
+  rollouts: 300
   learning_epochs: 5
-  mini_batches: 300
+  mini_batches: 100
   discount_factor: 0.99
   lambda: 0.95
   learning_rate: 1.0e-03
-  # learning_rate_scheduler: KLAdaptiveLR
-  learning_rate_scheduler: null
+  learning_rate_scheduler: KLAdaptiveLR
+  # learning_rate_scheduler: null
   learning_rate_scheduler_kwargs:
-    kl_threshold: 0.016
+    kl_threshold: 0.01
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler
@@ -62,9 +66,9 @@ agent:
   ratio_clip: 0.2
   value_clip: 0.2
   clip_predicted_values: True
-  entropy_loss_scale: 0.0010
+  entropy_loss_scale: 0.000001
   value_loss_scale: 1.0
-  kl_threshold: 0.0
+  kl_threshold: 0.02
   rewards_shaper_scale: 1.0
   time_limit_bootstrap: True
   # logging and checkpoint
@@ -72,12 +76,12 @@ agent:
     directory: ""
     experiment_name: ""
     write_interval: auto
-    checkpoint_interval: 1000
+    checkpoint_interval: 5000
 
 
 # Sequential trainer
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 1000000
+  timesteps: 1200000
   environment_info: log

@@ -22,7 +22,7 @@ parser.add_argument(
     "--task",
     type=str,
     default=None,
-    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
+    help="Name of the task. Optional includes: FAST-Quadcopter-Bodyrate; FAST-Intercept-Single; FAST-Intercept-Swarm; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint.",
 )
 parser.add_argument("--num_envs", type=int, default=1000, help="Number of environments to simulate.")
 parser.add_argument("--sim_device", type=str, default="cuda:0", help="Device to run the simulation on.")
@@ -49,6 +49,8 @@ elif args_cli.task in ["FAST-RGB-Waypoint", "FAST-Depth-Waypoint"]:
     args_cli.enable_cameras = True
 elif args_cli.task not in [
     "FAST-Quadcopter-Bodyrate",
+    "FAST-Intercept-Single",
+    "FAST-Intercept-Swarm",
     "FAST-Quadcopter-Vel",
     "FAST-Quadcopter-Waypoint",
     "FAST-Swarm-Bodyrate",
@@ -57,7 +59,7 @@ elif args_cli.task not in [
     "FAST-Swarm-Waypoint",
 ]:
     raise ValueError(
-        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
+        "Invalid task name #^# Please select from: FAST-Quadcopter-Bodyrate;FAST-Intercept-Single; FAST-Intercept-Swarm; FAST-Quadcopter-Vel; FAST-Quadcopter-Waypoint; FAST-RGB-Waypoint; FAST-Depth-Waypoint; FAST-Swarm-Bodyrate; FAST-Swarm-Acc; FAST-Swarm-Vel; FAST-Swarm-Waypoint."
     )
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -111,8 +113,7 @@ from isaaclab.utils.io import dump_yaml
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_acc_env, swarm_vel_env, swarm_waypoint_env
-
+from envs import camera_waypoint_env, quadcopter_bodyrate_env, quadcopter_waypoint_env, swarm_bodyrate_env, swarm_acc_env, swarm_vel_env, swarm_waypoint_env, Loitering_Munition_interception_single, Loitering_Munition_interception_swarm
 # PLACEHOLDER: Extension template (do not remove this comment)
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -144,11 +145,18 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRun
         env_cfg.seed = seed
         agent_cfg.seed = seed
 
-    log_root_path = os.path.abspath(os.path.join("outputs", "rsl_rl", args_cli.task, "flowline"))
+    # 统一输出根目录
+    OUT_ROOT = "/home/wcw/swarm_rl/outputs"  # <<< 你要的目录
+    log_root_path = os.path.join(OUT_ROOT, "rsl_rl", args_cli.task, "flowline")
+
     run_info = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     if agent_cfg.run_name:
         run_info += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, run_info)
+
+    # 确保必要的子目录存在
+    os.makedirs(os.path.join(log_dir, "params"), exist_ok=True)
+    os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
 
     # FIXME: Not robust 并非鲁棒 :(
     if args_cli.save_interval:
@@ -167,6 +175,10 @@ def main(env_cfg: DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRun
     os.makedirs(os.path.join(log_dir, "checkpoints"), exist_ok=True)
     if args_cli.task == "FAST-Quadcopter-Bodyrate":
         env_src_file = "quadcopter_bodyrate_env.py"
+    if args_cli.task == "FAST-Intercept-Single":
+        env_src_file = "Loitering_Munition_interception_single.py"
+    if args_cli.task == "FAST-Intercept-Swarm":
+        env_src_file = "Loitering_Munition_interception_swarm.py"
     elif args_cli.task == "FAST-Quadcopter-Vel":
         env_src_file = "quadcopter_vel_env.py"
     elif args_cli.task == "FAST-Quadcopter-Waypoint":

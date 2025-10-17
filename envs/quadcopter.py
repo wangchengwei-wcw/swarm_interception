@@ -9,7 +9,7 @@ from isaaclab.assets import ArticulationCfg
 CRAZYFLIE_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
     spawn=sim_utils.UsdFileCfg(
-        usd_path="assets/crazyfile/cf2x.usd",
+        usd_path="/home/wcw/swarm_rl/assets/crazyfile/cf2x.usd",
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=10.0,

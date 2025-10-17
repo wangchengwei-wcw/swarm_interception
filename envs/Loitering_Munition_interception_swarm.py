@@ -50,7 +50,7 @@ class FastInterceptionSwarmEnvCfg(DirectRLEnvCfg):
     enemy_target_alt = 3.0
     enemy_goal_radius = 0.5
     enemy_cluster_ring_radius: float = 25.0   # R：以 env 原点为圆心，在半径 R 的圆周上选簇中心
-    enemy_cluster_radius: float = 5.0         # r：以簇中心为圆心的小圆半径
+    enemy_cluster_radius: float = 6.0         # r：以簇中心为圆心的小圆半径
     enemy_min_separation: float = 4.0         # 敌机间最小 XY 间距（放不下会自适应稍微放宽）
 
     # 友方控制/速度范围/位置间隔
@@ -64,6 +64,8 @@ class FastInterceptionSwarmEnvCfg(DirectRLEnvCfg):
     # 单机观测/动作维度（实际 env * M）
     single_observation_space = 9
     single_action_space = 3
+    # 只有当某个友机到“敌群质心”的距离 <= 该半径时，才让该友机看到指向所有敌机的单位向量 e_hat
+    e_hat_enable_radius: float = 12.0
 
     # 占位（会在 __init__ 时按 M 覆盖）
     observation_space = 9
@@ -133,7 +135,8 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         E = cfg.enemy_size if cfg.enemy_size is not None else cfg.swarm_size
         if M != E:
             raise ValueError(f"friendly_size({M}) 必须等于 enemy_size({E}) 或使用 swarm_size 统一设置。")
-        single_obs_dim = 6 + 3 * E      # pos(3) + vel(3) + unit_to_all_enemies(3*E)
+        # pos(3) + vel(3) + centroid_pos(3) + unit_to_all_enemies(3*E)
+        single_obs_dim = 9 + 3 * E
         cfg.single_observation_space = single_obs_dim
         cfg.observation_space = single_obs_dim * M
         cfg.action_space = cfg.single_action_space * M
@@ -282,148 +285,272 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
 
     def _spawn_enemy(self, env_ids: torch.Tensor):
         """
-        三种典型“来袭”队形的随机生成（批量 env):
-        - triangle:   等边三角阵（尖角朝前）
-        - wedge:      人字形 / V 阵（两翼展开，尖角朝前）
-        - diamond:    菱形 / Vic
-        每个 env:随机选队形 + 在环上随机中心 + 阵型朝向对准目标 self._goal_e
-        保证阵内最近邻间距 >= cfg.enemy_min_separation
-        写入:self.enemy_pos[env_ids] -> [N,E,3]
+        并行生成敌机（固定最小间距 s_min，不放宽；必要时增大小圆半径）：
+        1) 每个 env 在半径 R_big 的大圆上选一个“簇中心”（均匀随机）；
+        2) 在以该中心为圆心、半径 r_env 的小圆内进行 Poisson 约束采样 E 个点；
+        若放不下，则只增大 r_env（几何充足性：r_env >= 0.5*s_min*sqrt(E/eta)）。
         """
         if self._profile_print:
             self._cuda_sync_if_needed()
             t0 = time.perf_counter()
 
-        # --- 设备与索引准备 ---
-        dev = self.fr_pos.device
+        dev = self.device
         env_ids = env_ids.to(dtype=torch.long, device=dev)
+        N = env_ids.numel()
+        if N == 0:
+            return
 
+        E = self.E
+        R_big   = float(self.cfg.enemy_cluster_ring_radius)   # 大圆半径
+        r_small = float(self.cfg.enemy_cluster_radius)        # 配置的小圆半径（下限）
+        s_min   = float(self.cfg.enemy_min_separation)        # 固定最小间距（不放宽）
+        hmin    = float(self.cfg.enemy_height_min)
+        hmax    = float(self.cfg.enemy_height_max)
+
+        # 打包密度（几何下界用）：随机放置取 0.7 更保守；若想更紧凑可设 0.85~0.90
+        eta = float(getattr(self.cfg, "enemy_poisson_eta", 0.7)) # 用于估算小圆能否容纳 E 个点
+
+        # 读 env 原点
         origins_all = self.terrain.env_origins
         if origins_all.device != dev:
             origins_all = origins_all.to(dev)
-        origins = origins_all[env_ids]  # [N,3]
+        origins = origins_all[env_ids]      # [N, 3]
 
-        if self._goal_e is None:
-            self._rebuild_goal_e()
-        goal_e = self._goal_e[env_ids]  # [N,3]
+        # ---------- 1) 大圆上选簇中心 ----------
+        two_pi = 2.0 * math.pi
+        theta = two_pi * torch.rand(N, device=dev) # 生成 N 个随机角度
+        centers = origins[:, :2] + R_big * torch.stack([torch.cos(theta), torch.sin(theta)], dim=-1)  # [N,2] 得到大圆上的采样点xy坐标
 
-        N, E = env_ids.shape[0], self.E
-        s_min = float(self.cfg.enemy_min_separation)
-        hmin, hmax = float(self.cfg.enemy_height_min), float(self.cfg.enemy_height_max)
+        # ---------- 2) 小圆内 Poisson 约束采样（只增大半径，不放宽间距） ----------
+        # 几何充足半径（下界）：r >= (s/2) * sqrt(E/eta)
+        r_needed = 0.5 * s_min * math.sqrt(E / max(eta, 1e-6)) # 计算几何所需最小半径
+        # 每个 env 的当前有效半径（起步为 max(r_small, r_needed) 再带 2% 裕度）
+        r_env = torch.full((N,), max(r_small, r_needed * 1.02), device=dev)
 
-        # 敌群中心：以各 env 原点为圆心的环（可抖动）
-        R_center = float(getattr(self.cfg, "enemy_cluster_ring_radius", 8.0))
-        center_jitter = float(getattr(self.cfg, "enemy_center_jitter", 0.0)) # 敌机中心随机抖动
+        s2 = s_min * s_min
+        pts = torch.zeros(N, E, 2, device=dev)                  # 结果 [N,E,2] 存储采样点的张量
+        filled = torch.zeros(N, dtype=torch.long, device=dev)       # 各 env 已放入点数
+        stagn  = torch.zeros(N, dtype=torch.long, device=dev)       # 连续停滞轮数（用于触发半径增长）
+        BATCH = 128            # 每轮为每个环境生成128个候选点
+        MAX_ROUNDS = 256       # 最大采样轮数
+        GROW_FACTOR = 1.05     # 每次增长 5%
+        STAGN_ROUNDS = 5       # 连续停滞 5 轮则增大半径
+        ar_e = torch.arange(E, device=dev)  # [E]，生成 [0, 1, ..., E-1] 张量，用于后续掩码操作
 
-        # -------- 3 种队形模板（局部坐标，以 +X 为“前向”）--------
-        def tmpl_triangle(E, s):
-            # 等边三角形栅格：第 r 行有 r+1 个点，行距 dy = s*sqrt(3)/2，列距 = s
-            if E == 0:
-                return torch.zeros(0, 2, device=dev)
-            dy = s * math.sqrt(3.0) / 2.0
-            xs, ys, cnt = [], [], 0
-            # R 满足 1+2+…+R >= E
-            R = int(math.ceil((math.sqrt(8.0 * E + 1.0) - 1.0) / 2.0))
-            for r in range(R):
-                num_in_row = r + 1
-                x_r = r * dy
-                y_start = -0.5 * r * s
-                for k in range(num_in_row):
-                    xs.append(x_r); ys.append(y_start + k * s)
-                    cnt += 1
-                    if cnt >= E:
-                        xy = torch.stack([torch.tensor(xs, device=dev),
-                                        torch.tensor(ys, device=dev)], dim=-1)
-                        return xy
-            xy = torch.stack([torch.tensor(xs, device=dev),
-                            torch.tensor(ys, device=dev)], dim=-1)
-            return xy[:E]
+        for _ in range(MAX_ROUNDS):
+            if (filled >= E).all():
+                break
 
-        def tmpl_wedge(E, s):
-            # 人字形（V 阵）：(0,0) 为尖角，两翼沿 ±45° 展开，步长 s/√2
-            if E == 0:
-                return torch.zeros(0, 2, device=dev)
-            pts = [(0.0, 0.0)]
-            step = s / math.sqrt(2.0)
-            k = 1
-            while len(pts) < E:
-                pts.append(( k * step,  k * step))  # 右上
-                if len(pts) >= E: break
-                pts.append(( k * step, -k * step))  # 右下
-                k += 1
-            return torch.tensor(pts, dtype=torch.float32, device=dev)
+            u = torch.rand(N, BATCH, device=dev)
+            v = torch.rand(N, BATCH, device=dev)
+            rr  = r_env.unsqueeze(1) * torch.sqrt(u.clamp_min(1e-12))
+            ang = two_pi * v
+            cand = centers[:, None, :] + torch.stack([rr * torch.cos(ang),
+                                                    rr * torch.sin(ang)], dim=-1)  # [N,BATCH,2]
 
-        def tmpl_diamond(E, s):
-            # 菱形/Vic：前/左/右/后 4 点；其余向 -X 方向排尾随
-            if E == 0:
-                return torch.zeros(0, 2, device=dev)
-            d = s / math.sqrt(2.0)
-            base = [( d, 0.0), (0.0,  d), (0.0, -d), (-d, 0.0)]
-            if E <= 4:
-                return torch.tensor(base[:E], dtype=torch.float32, device=dev)
-            pts = base[:]
-            k = 1
-            while len(pts) < E:
-                pts.append((-d - k * s, 0.0))
-                k += 1
-            return torch.tensor(pts, dtype=torch.float32, device=dev)
+            diff_valid = (ar_e.unsqueeze(0) < filled.unsqueeze(1)).unsqueeze(1)     # [N,1,E]
+            pts_eff = torch.where(diff_valid.unsqueeze(-1), pts[:, None, :, :], cand[:, :, None, :])
+            diff = cand[:, :, None, :] - pts_eff
+            sq   = (diff ** 2).sum(dim=-1).masked_fill(~diff_valid, float("inf"))
+            min_sq, _ = sq.min(dim=-1)
+            ok = min_sq >= s2
 
-        # 构建并中心化模板（几何中心在 (0,0)）
-        templates = []
-        for builder in (tmpl_triangle, tmpl_wedge, tmpl_diamond): # 返回该队形在局部坐标系下的平面坐标 xy，形状是 [E, 2]（E 架敌机，每架给一个 (x, y)）
-            xy = builder(E, s_min) # 生成某个队形的原始坐标（通常原点附近，间距至少为 s_min）
-            xy = xy - xy.mean(dim=0, keepdim=True) # 把几何中心挪到 (0, 0)
-            templates.append(xy) # 把该队形的中心化坐标保存起来
-        templates = torch.stack(templates, dim=0)  # [3,E,2] 把三个 [E, 2] 的队形模板堆叠成一个张量
-        F = templates.shape[0]  # 3
+            idxs = torch.arange(BATCH, device=dev).unsqueeze(0).expand(N, -1)
+            first_idx = torch.where(ok, idxs, torch.full_like(idxs, BATCH)).min(dim=1).values
+            can_take = (first_idx < BATCH) & (filled < E)
 
-        # -------- 给每个环境各自随机挑一种队形，并把队形中心放到一条圆环上的随机位置 --------
-        f_idx = torch.randint(low=0, high=F, size=(N,), device=dev)     # [N]
-        local_xy = templates[f_idx, :, :]                               # [N,E,2]
+            env_take = torch.nonzero(can_take, as_tuple=False).squeeze(1)
+            if env_take.numel() > 0:
+                pos = filled[env_take]
+                pts[env_take, pos, :] = cand[env_take, first_idx[env_take], :]
+                filled[env_take] += 1
+                stagn[env_take] = 0
 
-        # # 只保留三角阵
-        # templates = []
-        # for builder in (tmpl_triangle,):
-        #     xy = builder(E, s_min)
-        #     xy = xy - xy.mean(dim=0, keepdim=True)
-        #     templates.append(xy)
-        # templates = torch.stack(templates, dim=0)  # [1, E, 2]
-        # F = templates.shape[0]  # 1
+            stagn[~can_take] += 1
+            grow_mask = stagn >= STAGN_ROUNDS
+            if grow_mask.any():
+                r_env[grow_mask] *= GROW_FACTOR
+                stagn[grow_mask] = 0
 
-        # f_idx = torch.randint(low=0, high=F, size=(N,), device=dev)  # 全0
-        # local_xy = templates[f_idx, :, :]  # [N, E, 2]
+        # 若极端情况下仍未满，再尝试若干轮“只增长半径”的补偿
+        if (filled < E).any():
+            EXTRA_GROW_STEPS = 8
+            for _ in range(EXTRA_GROW_STEPS):
+                need_mask = filled < E
+                if not need_mask.any():
+                    break
+                r_env[need_mask] *= GROW_FACTOR
 
-        theta = 2.0 * math.pi * torch.rand(N, device=dev)
-        centers = torch.stack([
-            origins[:, 0] + R_center * torch.cos(theta),
-            origins[:, 1] + R_center * torch.sin(theta)
-        ], dim=1)                                                       # [N,2]
-        if center_jitter > 0.0:
-            centers = centers + (torch.rand(N, 2, device=dev) - 0.5) * (2.0 * center_jitter)
+                u = torch.rand(N, BATCH, device=dev)
+                v = torch.rand(N, BATCH, device=dev)
+                rr  = r_env.unsqueeze(1) * torch.sqrt(u)
+                ang = two_pi * v
+                cand = centers[:, None, :] + torch.stack([rr * torch.cos(ang),
+                                                        rr * torch.sin(ang)], dim=-1)
 
-        # -------- 将局部 +X 朝向对齐到 center->goal 的方向（面向目标前进）--------
-        goal_xy = goal_e[:, :2]                                         # [N,2]
-        head_vec = goal_xy - centers                                    # [N,2]
-        head = head_vec / head_vec.norm(dim=-1, keepdim=True).clamp_min(1e-8)  # 单位向量
-        c, s = head[:, 0], head[:, 1]                                   # cos, sin
-        # 旋转矩阵：把局部(+X, +Y)旋到 (head_x, head_y) 的朝向平面
-        Rm = torch.stack([torch.stack([c, -s], dim=-1),
-                        torch.stack([s,  c], dim=-1)], dim=1)         # [N,2,2]
-        rotated = torch.matmul(local_xy, Rm.transpose(1, 2))             # [N,E,2]
+                diff  = cand[:, :, None, :] - pts[:, None, :, :]
+                valid = (ar_e.unsqueeze(0) < filled.unsqueeze(1)).unsqueeze(1)
+                sq    = (diff ** 2).sum(dim=-1).masked_fill(~valid, float("inf"))
+                min_sq, _ = sq.min(dim=-1)
+                ok = min_sq >= s2
 
-        xy = centers.unsqueeze(1) + rotated                              # [N,E,2]
+                idxs = torch.arange(BATCH, device=dev).unsqueeze(0).expand(N, -1)
+                first_idx = torch.where(ok, idxs, torch.full_like(idxs, BATCH)).min(dim=1).values
+                can_take = (first_idx < BATCH) & (filled < E)
 
-        # -------- 高度 --------
-        z = origins[:, 2:3].unsqueeze(1) \
-            + (hmin + torch.rand(N, E, 1, device=dev) * (hmax - hmin))  # => [N,E,1]
-        enemy_pos = torch.cat([xy, z], dim=-1)  # [N,E,3]
+                env_take = torch.nonzero(can_take, as_tuple=False).squeeze(1)
+                if env_take.numel() > 0:
+                    pos = filled[env_take]
+                    pts[env_take, pos, :] = cand[env_take, first_idx[env_take], :]
+                    filled[env_take] += 1
 
-        self.enemy_pos[env_ids] = enemy_pos
+            # 仍未满则报错（说明 r_env 已增大很多仍未成功，需检查参数）
+            if (filled < E).any():
+                not_full = int((filled < E).sum().item())
+                raise RuntimeError(
+                    f"Poisson sampling failed after radius growth for {not_full}/{N} envs. "
+                    f"Consider increasing enemy_cluster_radius or reducing enemy_min_separation/E."
+                )
 
+        # ---------- 3) 写回到 self.enemy_pos ----------
+        # XY
+        pts = torch.nan_to_num(pts)
+        self.enemy_pos[env_ids, :, 0:2] = pts
+        # Z：按高度区间均匀随机
+        z = origins[:, 2:3].unsqueeze(1) + (hmin + torch.rand(N, E, 1, device=dev) * (hmax - hmin))
+        self.enemy_pos[env_ids, :, 2:3] = z                                     # [N,E,1]
         if self._profile_print:
             self._cuda_sync_if_needed()
-            dt = (time.perf_counter() - t0) * 1000.0
-            print(f"[TIME] _spawn_enemy (triangle/wedge/diamond): envs={N}, E={E}, s_min={s_min:.2f}, R={R_center:.2f} -> {dt:.2f} ms")
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[TIME] _spawn_enemy : {dt_ms:.3f} ms")
+
+    {
+    # def _spawn_enemy(self, env_ids: torch.Tensor):
+    #     """
+    #     并行生成敌机:
+    #     1) 对每个 env,在半径 R 的大圆上选一个“簇中心”；
+    #     2) 在以该中心为圆心、半径 r 的小圆内，用 Poisson 约束采样 E 个点（尽量满足最小间距 s);
+    #     3) 放不下则分环境自适应放宽间距（每停滞 5 轮放宽 5%），达不到上限时用均匀采样补齐。
+    #     """
+    #     dev = self.device
+    #     env_ids = env_ids.to(dtype=torch.long, device=dev)
+    #     N = env_ids.numel()
+    #     if N == 0:
+    #         return
+
+    #     E = self.E
+    #     R_big = float(self.cfg.enemy_cluster_ring_radius)   # 大圆半径（簇中心在这一圈上）
+    #     r_small = float(self.cfg.enemy_cluster_radius)      # 小圆半径（在此内采样敌机）
+    #     s_min = float(self.cfg.enemy_min_separation)        # 最小间距
+    #     hmin = float(self.cfg.enemy_height_min)
+    #     hmax = float(self.cfg.enemy_height_max)
+
+    #     # 读出每个 env 的原点（转到同设备）
+    #     origins_all = self.terrain.env_origins
+    #     if origins_all.device != dev:
+    #         origins_all = origins_all.to(dev)
+    #     origins = origins_all[env_ids]      # [N, 3]
+
+    #     # ---------- 1) 环上选簇中心（并行） ----------
+    #     two_pi = 2.0 * math.pi
+    #     theta = two_pi * torch.rand(N, device=dev)
+    #     centers = origins[:, :2] + R_big * torch.stack([torch.cos(theta), torch.sin(theta)], dim=-1)   # [N, 2] 得到大圆上的采样点xy坐标
+
+    #     # ---------- 2) 小圆内 Poisson 约束并行采样 ----------
+    #     # 经验容量估计（packing≈0.7），预估容量并适当放宽最小间距
+    #     s0 = max(s_min, 1e-6)
+    #     cap = 0.7 * (math.pi * r_small * r_small) / (0.25 * math.pi * s0 * s0)  # ≈ 0.7 * 4 r^2 / s^2
+    #     if E > cap:
+    #         scale = math.sqrt(E / max(cap, 1e-6))
+    #         s0 = s0 / (1.05 * scale)
+
+    #     # 每个环境独立的“当前间距阈值”（可自适应放宽）
+    #     s_cur = torch.full((N,), s0, device=dev)                # 每个 env 当前生效的最小间距
+    #     s2_cur = s_cur * s_cur                                  # 用平方距离对比，省 sqrt
+
+    #     # 结果容器与计数器
+    #     pts = torch.empty(N, E, 2, device=dev)                  # 存采样结果 [N, E, 2]
+    #     filled = torch.zeros(N, dtype=torch.long, device=dev)   # 每 env 已放入的点数
+    #     stagn = torch.zeros(N, dtype=torch.long, device=dev)    # 每 env 停滞轮数（放不进新点）（用于放宽 s）
+
+    #     # 采样参数
+    #     BATCH = 128                  # 每轮每个 env 候选数量（可视情况调大以加速填满）
+    #     MAX_ROUNDS = 256             # 最大轮数（同你原来的参数）
+
+    #     ar_e = torch.arange(E, device=dev)  # [E] 用于构造“已有点有效”掩码
+
+    #     for _ in range(MAX_ROUNDS):
+    #         if (filled >= E).all():
+    #             break
+
+    #         # --- 在小圆 r 内并行生成候选（N 个 env，各 BATCH 个点） ---
+    #         u = torch.rand(N, BATCH, device=dev)
+    #         v = torch.rand(N, BATCH, device=dev)
+    #         rr = r_small * torch.sqrt(u)
+    #         ang = two_pi * v
+    #         cand = centers[:, None, :] + torch.stack([rr * torch.cos(ang), rr * torch.sin(ang)], dim=-1)  # [N,BATCH,2]
+
+    #         # --- 计算每个候选点到“该 env 已选点”的最小距离（并行） ---
+    #         # diff: [N, BATCH, E, 2]；对超出 filled 的“空槽”点位用 mask 屏蔽
+    #         diff = cand[:, :, None, :] - pts[:, None, :, :]                    # [N, BATCH, E, 2]
+    #         valid = (ar_e.unsqueeze(0) < filled.unsqueeze(1))                  # [N, E]
+    #         valid = valid.unsqueeze(1)                                         # [N, 1, E] -> 广播到 [N, BATCH, E]
+
+    #         sq = (diff ** 2).sum(dim=-1)                                       # [N, BATCH, E]
+    #         sq = sq.masked_fill(~valid, float("inf"))
+    #         min_sq, _ = sq.min(dim=-1)                                         # [N, BATCH]
+
+    #         # 初始状态（filled==0）时，valid 全 False，min_sq=+inf，自然通过阈值
+    #         ok = min_sq >= s2_cur.unsqueeze(1)                                  # [N, BATCH]
+
+    #         # —— 每个 env 本轮最多收一个：取“第一个”符合的候选下标（保持并行且稳定）
+    #         idxs = torch.arange(BATCH, device=dev).unsqueeze(0).expand(N, -1)   # [N,BATCH]
+    #         first_idx = torch.where(ok, idxs, torch.full_like(idxs, BATCH)).min(dim=1).values  # [N]
+    #         can_take = (first_idx < BATCH) & (filled < E)                       # [N]
+
+    #         # 批量写入各 env 的下一个槽位
+    #         env_take = torch.nonzero(can_take, as_tuple=False).squeeze(1)       # [K]
+    #         if env_take.numel() > 0:
+    #             pos = filled[env_take]                                          # [K]
+    #             pts[env_take, pos, :] = cand[env_take, first_idx[env_take], :]  # scatter 到各自的“当前位置”
+    #             filled[env_take] += 1
+    #             stagn[env_take] = 0
+
+    #         # 未收进候选的 env 记一次停滞
+    #         stagn[~can_take] += 1
+
+    #         # 对于连续停滞的 env 放宽最小间距（每 5 轮放宽 5%），再清零停滞计数
+    #         relax = stagn >= 5
+    #         if relax.any():
+    #             s_cur[relax] *= 0.95
+    #             s2_cur[relax] = s_cur[relax] * s_cur[relax]
+    #             stagn[relax] = 0
+
+    #     # ---------- 3) 兜底：没放满的用均匀采样补齐（不再做距离约束） ----------
+    #     remaining = (E - filled).clamp(min=0)                                   # [N]
+    #     if (remaining > 0).any():
+    #         max_rem = int(remaining.max().item())
+    #         if max_rem > 0:
+    #             u = torch.rand(N, max_rem, device=dev)
+    #             v = torch.rand(N, max_rem, device=dev)
+    #             rr = r_small * torch.sqrt(u)
+    #             ang = two_pi * v
+    #             fill = centers[:, None, :] + torch.stack([rr * torch.cos(ang), rr * torch.sin(ang)], dim=-1)  # [N,max_rem,2]
+
+    #             ar_k = torch.arange(max_rem, device=dev).unsqueeze(0).expand(N, -1)       # [N,max_rem]
+    #             take_mask = ar_k < remaining.unsqueeze(1)                                  # [N,max_rem]
+    #             env_idx = torch.arange(N, device=dev).unsqueeze(1).expand_as(take_mask)    # [N,max_rem]
+    #             pos = filled.unsqueeze(1) + ar_k                                           # [N,max_rem]
+
+    #             pts[env_idx[take_mask], pos[take_mask], :] = fill[take_mask, :]
+
+    #     # ---------- 写回 self.enemy_pos ----------
+    #     # XY
+    #     self.enemy_pos[env_ids, :, 0:2] = pts                                   # [N,E,2]
+    #     # Z：按高度区间均匀随机
+    #     z = origins[:, 2:3].unsqueeze(1) + (hmin + torch.rand(N, E, 1, device=dev) * (hmax - hmin))
+    #     self.enemy_pos[env_ids, :, 2:3] = z                                     # [N,E,1]
+    }
 
     # --------- ↑↑↑↑↑敌方生成相关↑↑↑↑↑ ---------
     # --------- ↓↓↓↓↓可视化相关↓↓↓↓↓ ---------
@@ -760,6 +887,20 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         V_m = torch.stack([Vxm, Vym, Vzm], dim=-1)          # [N,M,3]
         fr_vel_w_step = y_up_to_z_up(V_m)                   # [N,M,3]
 
+
+        # 计算完 fr_vel_w_step 之后
+        badv = ~torch.isfinite(fr_vel_w_step).all(dim=-1)  # [N,M]
+        if badv.any():
+            nidx, midx = badv.nonzero(as_tuple=False)[0].tolist()
+            print(f"[NaN vel] env={nidx} agent={midx}",
+                f"Vm={self.Vm[nidx, midx].item():.6g}",
+                f"ny={self._ny[nidx, midx].item():.6g}",
+                f"nz={self._nz[nidx, midx].item():.6g}",
+                f"theta={self.theta[nidx, midx].item():.6g}",
+                f"psi={self.psi_v[nidx, midx].item():.6g}",
+                f"fr_vel_w_step={fr_vel_w_step[nidx, midx]}")
+
+
         # ---------- 2) 敌机速度（冻结=0） ----------
         if self.cfg.enemy_seek_origin:
             if self._goal_e is None:
@@ -775,6 +916,20 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         # ---------- 3) 推进到步末 ----------
         fr_pos1 = fr_pos0 + fr_vel_w_step * dt   # [N,M,3]
         en_pos1 = en_pos0 + enemy_vel_step * dt  # [N,E,3]
+
+
+        # 写回前检查 fr_pos1 / en_pos1
+        badp = ~torch.isfinite(fr_pos1).all(dim=-1)  # [N,M]
+        if badp.any():
+            nidx, midx = badp.nonzero(as_tuple=False)[0].tolist()
+            print(f"[NaN pos] env={nidx} agent={midx}",
+                f"fr_pos0={fr_pos0[nidx, midx]}",
+                f"fr_vel_w_step={fr_vel_w_step[nidx, midx]}",
+                f"dt={dt}")
+            # 应急：避免扩散
+            fr_pos1[nidx, midx] = fr_pos0[nidx, midx]
+
+
 
         # ---------- 4) 覆盖冻结对象（位置=捕获点, 速度=0） ----------
         self.fr_vel_w = fr_vel_w_step
@@ -925,6 +1080,7 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
 
         # 4. 友机位置无效
         nan_inf_any = ~torch.isfinite(self.fr_pos).all(dim=(1, 2))     # [N]
+        # print("fr_pos : ", self.fr_pos)
         # print("nan_inf_any : ", nan_inf_any)
 
         # 5. 友机投影越线 / 敌人到达目标
@@ -1139,13 +1295,23 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
             dt_ms = (time.perf_counter() - t0) * 1000.0
             print(f"[TIME] _reset_idx: {dt_ms:.3f} ms")
 
+        bad = ~torch.isfinite(self.fr_pos[env_ids]).all(dim=-1)  # [N,M]
+        if bad.any():
+            nidx = env_ids[bad.any(dim=1).nonzero(as_tuple=False)[0,0]].item()
+            midx = bad[nidx == env_ids].nonzero(as_tuple=False)[0,1].item()
+            print(f"[NaN after reset] env={nidx} agent={midx} fr_pos={self.fr_pos[nidx, midx]}")
+
     def _get_observations(self) -> dict:
         """
-        集中式观测：
+        集中式观测（修改后）：
         对每个友机，拼接：
-            [ fr_pos(3) | fr_vel_w(3) | e_hat_to_all_enemies(3*E) ]
-        其中 e_hat_to_all_enemies 会对“已冻结敌机”置零，从而不改变维度。
-        最终把 M 个友机的观测串接： [N, M * (6 + 3E)]。
+            [ fr_pos(3) | fr_vel_w(3) | enemy_centroid_pos(3) | e_hat_to_all_enemies(3*E, gated) ]
+        其中：
+        - enemy_centroid_pos(3) 为“当前存活敌机”的质心（世界系 z-up),对同一 env 下的每个友机相同；
+        - e_hat_to_all_enemies 仍是基于“敌机 - 友机”的单位向量，但：
+            * 对“已冻结敌机”置零（维度不变）；
+            * 对“距离敌团中心 > cfg.e_hat_enable_radius 的友机”整段置零（这就是半径门控/gating)。
+        最终把 M 个友机的观测串接： [N, M * (9 + 3E)]。
         """
         if self._profile_print:
             self._cuda_sync_if_needed()
@@ -1154,22 +1320,38 @@ class FastInterceptionSwarmEnv(DirectRLEnv):
         eps = 1e-6
         N, M, E = self.num_envs, self.M, self.E
 
+        # ------- 1) 基础量：友机位置/速度 -------
+        fr_pos = self.fr_pos                  # [N,M,3]
+        fr_vel = self.fr_vel_w                # [N,M,3]
+
+        # ------- 2) 敌机相对向量与单位向量（先不门控）-------
         # 全对全相对向量： enemy - friend  -> [N, M, E, 3]
-        rel_all = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)                # [N,M,E,3] 从 A 到 B 的箭头
-        dist_all = torch.linalg.norm(rel_all, dim=-1, keepdim=True).clamp_min(eps)      # [N,M,E,1] 箭头长度
-        e_hat_all = rel_all / dist_all                                                  # [N,M,E,3] 只保留箭头方向、去掉长度
+        rel_all = self.enemy_pos.unsqueeze(1) - fr_pos.unsqueeze(2)        # [N,M,E,3]
+        dist_all = torch.linalg.norm(rel_all, dim=-1, keepdim=True).clamp_min(eps)  # [N,M,E,1]
+        e_hat_all = rel_all / dist_all                                     # [N,M,E,3]
 
         # 屏蔽“已冻结敌机”的方向（置零，不改变维度）
         if hasattr(self, "enemy_frozen") and self.enemy_frozen is not None:
-            enemy_active = (~self.enemy_frozen).unsqueeze(1).unsqueeze(-1).float()      # [N,1,E,1]
+            enemy_active = (~self.enemy_frozen).unsqueeze(1).unsqueeze(-1).float()  # [N,1,E,1]
             e_hat_all = e_hat_all * enemy_active
 
-        # 展平每个友机的所有敌机方向 -> [N,M, 3E],把每个友机看到的 E 个敌机方向[E,3]按顺序拼平为[3E]
-        e_hat_flat = e_hat_all.reshape(N, M, 3 * E)
+        # ------- 3) 敌群质心（世界系）-------
+        # 使用在 _apply_action / reset 中已维护的缓存 self._enemy_centroid:[N,3]
+        centroid = self._enemy_centroid                                       # [N,3]
+        centroid_per_friend = centroid.unsqueeze(1).expand(N, M, 3)           # [N,M,3]
 
-        # 每个友机 6 + 3E 维
-        obs_each = torch.cat([self.fr_pos, self.fr_vel_w, e_hat_flat], dim=-1)          # [N,M, 6+3E]
-        # 串接 M 个友机 -> [N, M*(6+3E)]
+        # ------- 4) 半径门控：只有靠近质心（≤R）时，才保留 e_hat -------
+        R = float(getattr(self.cfg, "e_hat_enable_radius", 12.0))
+        # 友机到质心的 3D 距离
+        dist_to_centroid = torch.linalg.norm(fr_pos - centroid.unsqueeze(1), dim=-1)  # [N,M]
+        gate = (dist_to_centroid <= R).float().unsqueeze(-1).unsqueeze(-1)            # [N,M,1,1]
+        e_hat_all = e_hat_all * gate                                                  # 远离质心的友机看不到任何 e_hat（置零）
+
+        # ------- 5) 展平并拼接 -------
+        e_hat_flat = e_hat_all.reshape(N, M, 3 * E)           # [N,M,3E]
+        # 每个友机 9 + 3E 维
+        obs_each = torch.cat([fr_pos, fr_vel, centroid_per_friend, e_hat_flat], dim=-1)  # [N,M, 9+3E]
+        # 串接 M 个友机 -> [N, M*(9+3E)]
         obs = obs_each.reshape(N, -1)
 
         # ==== 计时打印 ====
