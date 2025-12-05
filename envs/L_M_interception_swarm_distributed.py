@@ -67,9 +67,7 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
     ny_max_g = 3.0
     nz_max_g = 3.0
     formation_spacing = 2.0
-    # flight_altitude = 1.0
     flight_altitude = 5.0
-
 
     # 奖励相关权重配置
     centroid_approach_weight: float = 0.02
@@ -85,29 +83,6 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
     w_gimbal_friend_block: float = 0.1
     w_gimbal_enemy_cover: float = 0.0
     vc_zero_inside: float = 15.0
-
-
-    # # 奖励相关
-    # centroid_approach_weight = 0.05
-    # hit_reward_weight: float = 80.0
-    # w_gimbal_friend_block: float = 2.0
-    # w_target_align: float = 0.01     # 速度对齐最近目标方向的权重
-    # w_gimbal_enemy_cover:  float = 0.1
-    # # vel_to_centroid_weight: float = 0.001
-    # enemy_reach_goal_penalty_weight: float = 50.0
-    # all_kill_weight: float = 30.0
-    # friend_too_high_penalty_weight: float = 1.0
-    # friend_too_low_penalty_weight: float = 1.0
-    # leak_penalty_weight: float = 0.05
-    # leak_margin: float = 1.0
-
-    # # w_gimbal_friend_block: float = 0.0
-    # # w_gimbal_enemy_cover:  float = 0.0
-    # vel_to_centroid_weight: float = 0.0
-    # # friend_too_high_penalty_weight: float = 0.0
-    # # friend_too_low_penalty_weight: float = 0.0
-    # # 靠近质心与速度指向质心的门控距离
-    # vc_zero_inside: float = 15.0
 
     # 友机队形参数
     agents_per_row: int     = 10       # 每排数量 (建议 10)
@@ -755,21 +730,52 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if self.friendly_visualizer is None:
-                # from isaaclab.markers import VisualizationMarkers, Loitering_Munition_MARKER_CFG
-                # f_cfg = Loitering_Munition_MARKER_CFG.copy()
-                # f_cfg.prim_path = "/Visuals/FriendlyModel"  # 每类 marker 建议单独命名路径
-                # # 如果你想额外调节缩放或材质，这里也可以覆盖：
-                # f_cfg.markers["mymodel"].scale = (10.5, 10.5, 10.5)
-                # # 创建 USD 模型 marker
-                # self.friendly_visualizer = VisualizationMarkers(f_cfg)
-                # self.friendly_visualizer.set_visibility(True)
-                if HAS_AXIS_MARKER and AXIS_MARKER_CFG is not None:
-                    f_cfg = AXIS_MARKER_CFG.copy()
-                    f_cfg.prim_path = "/Visuals/FriendlyAxis"
-                    f_cfg.markers["frame"].scale = (1, 1, 1)
-                    self.friendly_visualizer = VisualizationMarkers(f_cfg)
-                self.friendly_visualizer.set_visibility(True)
+                from isaaclab.markers import VisualizationMarkers, Loitering_Munition_MARKER_CFG
+                import copy
+                import colorsys
+                f_cfg = Loitering_Munition_MARKER_CFG.copy()
+                f_cfg.prim_path = "/Visuals/FriendlyModel"
 
+                # 取出原始的 USD 配置作为模板
+                base_marker = f_cfg.markers["mymodel"]
+
+                # 生成 self.M 种明显不同的颜色（HSV 均匀取样）
+                def _color_wheel(n):
+                    cols = []
+                    for i in range(max(1, n)):
+                        h = i / float(max(1, n))
+                        s = 0.8
+                        v = 0.9
+                        r, g, b = colorsys.hsv_to_rgb(h, s, v)
+                        cols.append((r, g, b))
+                    return cols
+
+                colors = _color_wheel(self.M)
+
+                markers = {}
+                for i in range(self.M):
+                    cfg_i = copy.deepcopy(base_marker)
+                    # 缩放还是你原来那样
+                    if hasattr(cfg_i, "scale"):
+                        cfg_i.scale = (30.0, 30.0, 30.0)
+                    # 每个 prototype 一个不同的材质颜色
+                    cfg_i.visual_material = sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=colors[i]
+                    )
+                    markers[f"mymodel_{i}"] = cfg_i
+
+                # 用我们新建的一批 prototype 替换原来的 markers
+                f_cfg.markers = markers
+
+                self.friendly_visualizer = VisualizationMarkers(f_cfg)
+                self.friendly_visualizer.set_visibility(True)
+                # 坐标轴可视化友机
+                # if HAS_AXIS_MARKER and AXIS_MARKER_CFG is not None:
+                #     f_cfg = AXIS_MARKER_CFG.copy()
+                #     f_cfg.prim_path = "/Visuals/FriendlyAxis"
+                #     f_cfg.markers["frame"].scale = (1, 1, 1)
+                #     self.friendly_visualizer = VisualizationMarkers(f_cfg)
+                # self.friendly_visualizer.set_visibility(True)
             if self.cfg.debug_vis_enemy and self.enemy_visualizer is None:
                 if getattr(self.cfg, "enemy_render_as_sphere", True) and HAS_SPHERE_MARKER:
                     # —— 敌机球体可视化（半径 = hit_radius）——
@@ -803,19 +809,50 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
     def _flatten_agents(self, X: torch.Tensor) -> torch.Tensor:
         return X.reshape(-1, X.shape[-1])
 
+    def _quat_mul(self, q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+        """四元数乘法: 结果表示先做 q1 再做 q2（w,x,y,z）"""
+        w1, x1, y1, z1 = q1.unbind(-1)
+        w2, x2, y2, z2 = q2.unbind(-1)
+
+        w = w1*w2 - x1*x2 - y1*y2 - z1*z2
+        x = w1*x2 + x1*w2 + y1*z2 - z1*y2
+        y = w1*y2 - x1*z2 + y1*w2 + z1*x2
+        z = w1*z2 + x1*y2 - y1*x2 + z1*w2
+        return torch.stack([w, x, y, z], dim=-1)
+
     def _debug_vis_callback(self, event):
-        # if self.friendly_visualizer is not None:
-        #     pos = self.fr_pos.reshape(-1, 3)  # [N*M,3]
-        #     quat = torch.zeros(pos.shape[0], 4, device=self.device)
-        #     quat[:, 0] = 1.0  # 单位四元数 (w=1,x=0,y=0,z=0)
-        #     scale = torch.ones_like(pos)
-        #     self.friendly_visualizer.visualize(translations=pos, orientations=quat, scales=scale)
         if self.friendly_visualizer is not None:
-            fr_quats = self._friendly_world_quats_zup()
+            fr_quats = self._friendly_world_quats_zup()          # [N,M,4]
+            pos      = self._flatten_agents(self.fr_pos)         # [N*M,3]
+            quat     = self._flatten_agents(fr_quats)            # [N*M,4]
+            ang = math.pi / 2
+            q_fix = torch.tensor(
+                [math.cos(ang / 2), 0.0, 0.0, math.sin(ang / 2)],  # (w,x,y,z)
+                device=self.device,
+                dtype=quat.dtype,
+            ).expand_as(quat)
+            quat = self._quat_mul(quat, q_fix)
+            quat = quat / torch.linalg.norm(quat, dim=-1, keepdim=True).clamp_min(1e-8)
+            scale = torch.ones_like(pos)
+            N, M = self.num_envs, self.M
+            marker_indices = torch.arange(M, device=self.device, dtype=torch.long).repeat(N)
+
             self.friendly_visualizer.visualize(
-                translations=self._flatten_agents(self.fr_pos),
-                orientations=self._flatten_agents(fr_quats)
+                translations=pos,
+                orientations=quat,
+                scales=scale,
+                marker_indices=marker_indices,
             )
+            self.friendly_visualizer.visualize(
+                translations=pos,
+                orientations=quat,
+            )
+        # if self.friendly_visualizer is not None:
+        #     fr_quats = self._friendly_world_quats_zup()
+        #     self.friendly_visualizer.visualize(
+        #         translations=self._flatten_agents(self.fr_pos),
+        #         orientations=self._flatten_agents(fr_quats)
+        #     )
         if self.enemy_visualizer is not None:
             self.enemy_visualizer.visualize(translations=self._flatten_agents(self.enemy_pos))
 
@@ -1804,7 +1841,7 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         stagger_shift = (row_idxs % 2) * (lat_spacing / 2.0)
         # 为了保持整体重心居中，奇数排 +0.5*S，偶数排其实是 0。
         # 加上 shift 后，奇数排会稍微偏右一点，这是正常的交错。
-        y_local = y_local + stagger_shift
+        # y_local = y_local + stagger_shift
 
         # --- 高度 (Z_local): 阶梯状上升
         z_local = base_altitude + row_idxs * row_height_diff
