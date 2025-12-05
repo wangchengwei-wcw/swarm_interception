@@ -42,9 +42,9 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
 
     # ---------- 数量控制 ----------
     swarm_size: int = 6                 # 便捷参数：同时设置友机/敌机数量
-    # friendly_size: int = math.floor(10 * 1.25)
-    friendly_size: int = 15
-    enemy_size: int = 15
+    # friendly_size: int = math.floor(30 * 1.25)
+    friendly_size: int = 30
+    enemy_size: int = 30
 
     # 敌机出生区域（圆盘）与最小间隔
     debug_vis_enemy = True
@@ -52,8 +52,8 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
     enemy_height_max = 15.0
     enemy_speed = 5.0
     enemy_target_alt = 10.0
-    enemy_goal_radius = 6.0
-    enemy_cluster_ring_radius: float = 400.0  # 敌机的生成距离
+    enemy_goal_radius = 1.0
+    enemy_cluster_ring_radius: float = 100.0  # 敌机的生成距离
     enemy_cluster_radius: float = 20.0        # 敌机团的半径(固定队形中未使用)
     enemy_min_separation: float = 5.0         # 敌机间最小水平间隔
     enemy_vertical_separation: float = 5.0    # 立体队形敌机间最小垂直间隔
@@ -61,37 +61,63 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
     hit_radius = 1.0
 
     # 友方控制/速度范围/位置间隔
-    # Vm_min = 11.0
-    Vm_min = 0.0
+    Vm_min = 11.0
+    # Vm_min = 0.0
     Vm_max = 13.0
     ny_max_g = 3.0
     nz_max_g = 3.0
     formation_spacing = 2.0
-    flight_altitude = 0.2
+    # flight_altitude = 1.0
+    flight_altitude = 5.0
 
-    # —— 单 agent 观测/动作维（用于 MARL 的 per-agent 空间）——
-    single_observation_space: int = 9     # 将在 __post_init__ 基于 E 自动覆盖为 6 + 3E
-    single_action_space: int = 3          # (ny, nz, throttle)
 
-    # —— Multi-agent 所需的字典空间（在 __post_init__ 填充）——
-    possible_agents: list[str] | None = None
-    action_spaces: dict[str, int] | None = None
-    observation_spaces: dict[str, int] | None = None
-
-    # 奖励相关
-    centroid_approach_weight = 0.05
-    # centroid_approach_weight = 0.10
-    hit_reward_weight: float = 100.0
-    w_gimbal_friend_block: float = 1.0
-    w_gimbal_enemy_cover:  float = 0.0
+    # 奖励相关权重配置
+    centroid_approach_weight: float = 0.02
     vel_to_centroid_weight: float = 0.0
-    enemy_reach_goal_penalty_weight: float = 100.0
+    hit_reward_weight: float = 10.0
     all_kill_weight: float = 10.0
-    friend_too_high_penalty_weight: float = 0.005
-    friend_too_low_penalty_weight: float = 0.05
-
-    # 靠近质心与速度指向质心的门控距离
+    w_target_align: float = 0.0008
+    leak_penalty_weight: float = 0.01
+    leak_margin: float = 1.0
+    friend_too_low_penalty_weight: float = 0.001
+    friend_too_high_penalty_weight: float = 0.001
+    enemy_reach_goal_penalty_weight: float = 10.0
+    w_gimbal_friend_block: float = 0.1
+    w_gimbal_enemy_cover: float = 0.0
     vc_zero_inside: float = 15.0
+
+
+    # # 奖励相关
+    # centroid_approach_weight = 0.05
+    # hit_reward_weight: float = 80.0
+    # w_gimbal_friend_block: float = 2.0
+    # w_target_align: float = 0.01     # 速度对齐最近目标方向的权重
+    # w_gimbal_enemy_cover:  float = 0.1
+    # # vel_to_centroid_weight: float = 0.001
+    # enemy_reach_goal_penalty_weight: float = 50.0
+    # all_kill_weight: float = 30.0
+    # friend_too_high_penalty_weight: float = 1.0
+    # friend_too_low_penalty_weight: float = 1.0
+    # leak_penalty_weight: float = 0.05
+    # leak_margin: float = 1.0
+
+    # # w_gimbal_friend_block: float = 0.0
+    # # w_gimbal_enemy_cover:  float = 0.0
+    # vel_to_centroid_weight: float = 0.0
+    # # friend_too_high_penalty_weight: float = 0.0
+    # # friend_too_low_penalty_weight: float = 0.0
+    # # 靠近质心与速度指向质心的门控距离
+    # vc_zero_inside: float = 15.0
+
+    # 友机队形参数
+    agents_per_row: int     = 10       # 每排数量 (建议 10)
+    lat_spacing: float      = 5.0      # 横向间隔 (同一排飞机间距)
+    row_spacing: float      = 5.0      # 纵向间隔 (排与排之间距，需>4m以避开水平FOV)
+    row_height_diff: float  = 3.0      # 高度阶梯 (后排比前排高 1m)
+
+    # -------- 分波发射配置（按友机编号切波）--------
+    friend_wave_enable: bool =  False               # 分拨发射开关
+    friend_wave_launch_dist: float = 110.0          # 前一波离原点超过多少米发射下一波
 
     # —— 云台 / FOV & 生效距离 ——
     gimbal_fov_h_deg: float = 10.0      # 水平总 FOV（度）
@@ -101,7 +127,7 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
     gimbal_effective_range: float = 100.0  # 云台“有效拍摄距离”（米）
 
     # 频率
-    episode_length_s = 100.0
+    episode_length_s = 50.0
     physics_freq = 200.0
     action_freq = 40.0
     gui_render_freq = 50.0
@@ -112,8 +138,6 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
     gimbal_vis_enable: bool = False          # 云台视野可视化开关
     traj_vis_enable: bool = False            # 轨迹可视化开关
     per_train_data_print: bool = False       # reset中打印
-    function_time_print: bool = False        # 函数耗时打印
-    gimbal_face_centroid: bool = False       # True: 自动指向敌团质心；False: 由策略的第4/5维控制
     gimbal_axis_vis_enable: bool = False     # 可视化云台光轴
 
     # —— 云台可视化（小方块点阵线框） ——
@@ -124,6 +148,10 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
     traj_vis_len: int = 500                 # 每个友机最多保留多少个轨迹点（循环缓冲）
     traj_vis_every_n_steps: int = 2         # 每隔多少个物理步记录/刷新一次
     traj_marker_size: tuple[float,float,float] = (0.05, 0.05, 0.05)  # 面包屑小方块尺寸
+
+    # —— 单 agent 观测/动作维（用于 MARL 的 per-agent 空间）——
+    single_observation_space: int = 9     # 将在 __post_init__ 基于 E 自动覆盖为 6 + 3E
+    single_action_space: int = 3          # (ny, nz, throttle)
 
     # 仿真与地面
     sim: SimulationCfg = SimulationCfg(
@@ -173,14 +201,13 @@ class FastInterceptionSwarmMARLCfg(DirectMARLEnvCfg):
         self.possible_agents = [f"drone_{i}" for i in range(int(M))]
 
         # 单智能体维度（与原集中式每机位 obs 结构一致）
-        single_obs_dim =  6 * int(M) + 3 * int(E) + 3 * int(E) + 3 + 1
+        # single_obs_dim =  6 * int(M) + 3 * int(E) + 3 * int(E) + 3 + 1
+        # single_obs_dim = 7 * int(M) + 3 * int(E) + 10
+        single_obs_dim = 7 * int(M) + 14
         single_act_dim = 3                  # (ny, nz, throttle)
 
-        # 可选：在 cfg 层先放一个“数字”，真正的 gym.Space 在 Env.__init__ 里构造
         self.single_observation_space = single_obs_dim
         self.single_action_space = single_act_dim
-
-        # 也可在 cfg 层放 per-agent 的“维度字典”（同样只是数字）
         self.observation_spaces = {ag: single_obs_dim for ag in self.possible_agents}
         self.action_spaces      = {ag: single_act_dim for ag in self.possible_agents}
 
@@ -194,8 +221,9 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         M = cfg.friendly_size if cfg.friendly_size is not None else cfg.swarm_size
         E = cfg.enemy_size    if cfg.enemy_size    is not None else cfg.swarm_size
         act_dim = int(cfg.single_action_space)                 # 已有的动作维
-        single_obs_dim = 6 * int(M) + 3 * int(E) + 3 * int(E) + 3 + 1
-
+        # single_obs_dim = 6 * int(M) + 3 * int(E) + 3 * int(E) + 3 + 1
+        # single_obs_dim = 7 * int(M) + 3 * int(E) + 10 
+        single_obs_dim = 7 * int(M) + 14
         # 兼容：有些下游脚本把这个字段当“维度”用
         cfg.single_observation_dim = single_obs_dim
         cfg.single_observation_space = single_obs_dim  # <- 保留旧别名（int），不与 gym.Space 混淆
@@ -298,20 +326,46 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         self._enemy_active_any    = torch.zeros(N, device=dev, dtype=torch.bool)
         self._goal_e              = None
         self._axis_hat            = torch.zeros(N, 3, device=dev, dtype=dtype)
+        self._axis_hat_xy         = torch.zeros(N, 2, device=dev, dtype=dtype)
         self.enemy_goal_height    = torch.zeros(N, 1, device=dev, dtype=dtype)
+
+        # ------------------ 分波发射：按编号预分配波次 ------------------
+        self.friend_wave_enable = bool(getattr(self.cfg, "friend_wave_enable", False))
+        self.friend_wave_size   = int(getattr(self.cfg, "agents_per_row", self.M))
+
+        # 波次数 = ceil(M / wave_size)
+        self.friend_wave_count = int(math.ceil(self.M / self.friend_wave_size))
+
+        # 每个友机固定所属波次（0,1,2,...）
+        self.friend_wave_index = (torch.arange(self.M, device=dev, dtype=torch.long) // self.friend_wave_size)  # [M]
+
+        # 每个env当前发射到第几波（0-based）
+        self.friend_wave_stage = torch.zeros(self.num_envs, device=dev, dtype=torch.long)
+
+        # 分波发射用的缓存：原点 xy（懒初始化）
+        self._origins_xy = None
+
+        # ---- agent id one-hot feature ----
+        self._agent_id_onehot = torch.eye(self.M, device=dev, dtype=torch.float32).unsqueeze(0)
 
     # —————————————————— ↓↓↓↓↓工具/可视化区↓↓↓↓↓ ——————————————————
     def _friendly_world_quats_zup(self) -> torch.Tensor:
-        """由zup系下欧拉角的pitch是抬头正,低头负。而转换到四元数中pitch是抬头负、低头正""" 
-        vel = self.fr_vel_w  # [N, M, 3]  Z-up 世界速度
-        vx, vy, vz = vel[..., 0], vel[..., 1], vel[..., 2]  # z-up
-        sp_xy = torch.sqrt((vx * vx + vy * vy).clamp_min(1e-9))
+        """由zup系下欧拉角的pitch是抬头正,低头负。而转换到四元数中pitch是抬头负、低头正。从print来看直接从速度反算yaw、pitch和直接拿yaw、pitch数值好像是一样的""" 
+        # vel = self.fr_vel_w  # [N, M, 3]  Z-up 世界速度
+        # vx, vy, vz = vel[..., 0], vel[..., 1], vel[..., 2]  # z-up
+        # sp_xy = torch.sqrt((vx * vx + vy * vy).clamp_min(1e-9))
 
-        # ==== Yaw（偏航角，绕 Z 轴）====
-        yaw   = torch.atan2(vy, vx)
-        # ==== Pitch（俯仰角，绕 Y 轴）====
-        pitch = -torch.atan2(vz, sp_xy)
-        # ==== Roll = 0（我们不控制横滚）====
+        # # ==== Yaw（偏航角，绕 Z 轴）====
+        # yaw   = torch.atan2(vy, vx)
+        # # ==== Pitch（俯仰角，绕 Y 轴）====
+        # pitch = -torch.atan2(vz, sp_xy)
+        # # ==== Roll = 0（我们不控制横滚）====
+        # roll = torch.zeros_like(yaw)
+        # print("yaw1:",yaw, " pitch1:", pitch)
+        # print("yaw2:",self.psi_v, " pitch2:", -self.theta)
+
+        yaw   = self.psi_v
+        pitch = -self.theta
         roll = torch.zeros_like(yaw)
 
         # ==== 欧拉角 → 四元数（Z-Y-X 顺序，即 yaw → pitch → roll）====
@@ -331,9 +385,6 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         quats = quats / torch.linalg.norm(quats, dim=-1, keepdim=True).clamp_min(1e-8)
 
         return quats
-
-    def _flatten_agents(self, X: torch.Tensor) -> torch.Tensor:
-        return X.reshape(-1, X.shape[-1])
 
     def close(self):
         if getattr(self, "_is_closed", True):
@@ -363,131 +414,11 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         norm = axis.norm(dim=-1, keepdim=True).clamp_min(1e-6)
         self._axis_hat = axis / norm                # 敌方目标点指向敌团质心的单位向量
 
-    def _spawn_enemy_random(self, env_ids: torch.Tensor):
-        """在指定环境中，使用泊松盘采样生成敌机位置。"""
-        dev = self.device
-        env_ids = env_ids.to(dtype=torch.long, device=dev)
-        N = env_ids.numel()
-        if N == 0:
-            return
-
-        E = self.E
-        R_big   = float(self.cfg.enemy_cluster_ring_radius)
-        r_small = float(self.cfg.enemy_cluster_radius)
-        s_min   = float(self.cfg.enemy_min_separation)
-        hmin    = float(self.cfg.enemy_height_min)
-        hmax    = float(self.cfg.enemy_height_max)
-
-        eta = float(getattr(self.cfg, "enemy_poisson_eta", 0.7))
-
-        origins_all = self.terrain.env_origins
-        if origins_all.device != dev:
-            origins_all = origins_all.to(dev)
-        origins = origins_all[env_ids]
-
-        two_pi = 2.0 * math.pi
-        theta = two_pi * torch.rand(N, device=dev)
-        centers = origins[:, :2] + R_big * torch.stack([torch.cos(theta), torch.sin(theta)], dim=-1)
-
-        r_needed = 0.5 * s_min * math.sqrt(E / max(eta, 1e-6))
-        r_env = torch.full((N,), max(r_small, r_needed * 1.02), device=dev)
-
-        s2 = s_min * s_min
-        pts = torch.zeros(N, E, 2, device=dev)
-        filled = torch.zeros(N, dtype=torch.long, device=dev)
-        stagn  = torch.zeros(N, dtype=torch.long, device=dev)
-        BATCH = 128
-        MAX_ROUNDS = 256
-        GROW_FACTOR = 1.05
-        STAGN_ROUNDS = 5
-        ar_e = torch.arange(E, device=dev)
-
-        for _ in range(MAX_ROUNDS):
-            if (filled >= E).all():
-                break
-
-            u = torch.rand(N, BATCH, device=dev)
-            v = torch.rand(N, BATCH, device=dev)
-            rr  = r_env.unsqueeze(1) * torch.sqrt(u.clamp_min(1e-12))
-            ang = two_pi * v
-            cand = centers[:, None, :] + torch.stack([rr * torch.cos(ang),
-                                                    rr * torch.sin(ang)], dim=-1)
-
-            diff_valid = (ar_e.unsqueeze(0) < filled.unsqueeze(1)).unsqueeze(1)
-            pts_eff = torch.where(diff_valid.unsqueeze(-1), pts[:, None, :, :], cand[:, :, None, :])
-            diff = cand[:, :, None, :] - pts_eff
-            sq   = (diff ** 2).sum(dim=-1).masked_fill(~diff_valid, float("inf"))
-            min_sq, _ = sq.min(dim=-1)
-            ok = min_sq >= s2
-
-            idxs = torch.arange(BATCH, device=dev).unsqueeze(0).expand(N, -1)
-            first_idx = torch.where(ok, idxs, torch.full_like(idxs, BATCH)).min(dim=1).values
-            can_take = (first_idx < BATCH) & (filled < E)
-
-            env_take = torch.nonzero(can_take, as_tuple=False).squeeze(1)
-            if env_take.numel() > 0:
-                pos = filled[env_take]
-                pts[env_take, pos, :] = cand[env_take, first_idx[env_take], :]
-                filled[env_take] += 1
-                stagn[env_take] = 0
-
-            stagn[~can_take] += 1
-            grow_mask = stagn >= STAGN_ROUNDS
-            if grow_mask.any():
-                r_env[grow_mask] *= GROW_FACTOR
-                stagn[grow_mask] = 0
-
-        if (filled < E).any():
-            EXTRA_GROW_STEPS = 8
-            for _ in range(EXTRA_GROW_STEPS):
-                need_mask = filled < E
-                if not need_mask.any():
-                    break
-                r_env[need_mask] *= GROW_FACTOR
-
-                u = torch.rand(N, BATCH, device=dev)
-                v = torch.rand(N, BATCH, device=dev)
-                rr  = r_env.unsqueeze(1) * torch.sqrt(u)
-                ang = two_pi * v
-                cand = centers[:, None, :] + torch.stack([rr * torch.cos(ang),
-                                                        rr * torch.sin(ang)], dim=-1)
-
-                diff  = cand[:, :, None, :] - pts[:, None, :, :]
-                valid = (ar_e.unsqueeze(0) < filled.unsqueeze(1)).unsqueeze(1)
-                sq    = (diff ** 2).sum(dim=-1).masked_fill(~valid, float("inf"))
-                min_sq, _ = sq.min(dim=-1)
-                ok = min_sq >= s2
-
-                idxs = torch.arange(BATCH, device=dev).unsqueeze(0).expand(N, -1)
-                first_idx = torch.where(ok, idxs, torch.full_like(idxs, BATCH)).min(dim=1).values
-                can_take = (first_idx < BATCH) & (filled < E)
-
-                env_take = torch.nonzero(can_take, as_tuple=False).squeeze(1)
-                if env_take.numel() > 0:
-                    pos = filled[env_take]
-                    pts[env_take, pos, :] = cand[env_take, first_idx[env_take], :]
-                    filled[env_take] += 1
-
-            if (filled < E).any():
-                not_full = int((filled < E).sum().item())
-                raise RuntimeError(
-                    f"Poisson sampling failed after radius growth for {not_full}/{N} envs. "
-                    f"Consider increasing enemy_cluster_radius or reducing enemy_min_separation/E."
-                )
-
-        # 写回
-        pts = torch.nan_to_num(pts)
-        self.enemy_pos[env_ids, :, 0:2] = pts
-        z = origins[:, 2:3].unsqueeze(1) + (hmin + torch.rand(N, E, 1, device=dev) * (hmax - hmin))
-        self.enemy_pos[env_ids, :, 2:3] = z
+        axis_xy = centroid[:, :2] - self._goal_e[:, :2]
+        norm_xy = axis_xy.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        self._axis_hat_xy = axis_xy / norm_xy
 
     def _spawn_enemy(self, env_ids: torch.Tensor):
-        """
-        四种来袭队形（批量 env,完全并行）：
-        0: v_wedge_2d  1: rect_2d  2: rect_3d  3: cube_3d
-        每个 env 随机挑一种，放在以 env 原点为圆心的环上；全部使用 E=self.E 架敌机。
-        写入: self.enemy_pos[env_ids] -> [N,E,3]
-        """
         # ---- 基本量 ----
         dev   = self.fr_pos.device
         dtype = self.fr_pos.dtype
@@ -650,7 +581,6 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
             pts = pts[:E]
             return _centerize(pts)
 
-
         def _tmpl_rect_3d_reverse(E: int, s: float, sz_: float, aspect_xy: float = 2.0) -> torch.Tensor:
             # 固定两层
             L = 2
@@ -664,15 +594,111 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
             xyz = _grid3d(c, r, L, s, s, sz_)[:E, :]
             return xyz
 
+        # 泊松采样生成敌机
+        eta_poisson = float(getattr(self.cfg, "enemy_poisson_eta", 0.7))
+        r_small = float(getattr(self.cfg, "enemy_cluster_radius", s_min))
+
+        def _tmpl_poisson_2d(E: int, s: float, eta: float = 0.7) -> torch.Tensor:
+            """在局部坐标系内做 Poisson disk 采样，返回 [E,3]，质心在原点，Z=0."""
+            if E <= 0:
+                return torch.zeros(0, 3, dtype=dtype, device=dev)
+
+            two_pi = 2.0 * math.pi
+            # 估算需要的半径
+            r_needed = 0.5 * s * math.sqrt(E / max(eta, 1e-6))
+            r_env = max(r_small, r_needed * 1.02)
+
+            BATCH        = 128
+            MAX_ROUNDS   = 256
+            STAGN_ROUNDS = 5
+            GROW_FACTOR  = 1.05
+
+            pts = torch.zeros(E, 2, dtype=dtype, device=dev)  # [E,2]
+            filled = 0
+            stagn  = 0
+            s2 = s * s
+
+            for _ in range(MAX_ROUNDS):
+                if filled >= E:
+                    break
+
+                u = torch.rand(BATCH, device=dev, dtype=dtype)
+                v = torch.rand(BATCH, device=dev, dtype=dtype)
+                rr  = r_env * torch.sqrt(u.clamp_min(1e-12))
+                ang = two_pi * v
+                cand = torch.stack([rr * torch.cos(ang), rr * torch.sin(ang)], dim=-1)  # [BATCH,2]
+
+                if filled == 0:
+                    pts[0] = cand[0]
+                    filled = 1
+                    stagn = 0
+                    continue
+
+                diff = cand.unsqueeze(1) - pts[:filled].unsqueeze(0)   # [BATCH,filled,2]
+                sq   = (diff ** 2).sum(dim=-1)                         # [BATCH,filled]
+                min_sq, _ = sq.min(dim=1)                              # [BATCH]
+                ok = min_sq >= s2
+
+                if ok.any():
+                    idx = torch.nonzero(ok, as_tuple=False)[0, 0]
+                    pts[filled] = cand[idx]
+                    filled += 1
+                    stagn = 0
+                else:
+                    stagn += 1
+                    if stagn >= STAGN_ROUNDS:
+                        r_env *= GROW_FACTOR
+                        stagn = 0
+
+            if filled < E:
+                EXTRA_GROW_STEPS = 8
+                for _ in range(EXTRA_GROW_STEPS):
+                    if filled >= E:
+                        break
+                    r_env *= GROW_FACTOR
+
+                    u = torch.rand(BATCH, device=dev, dtype=dtype)
+                    v = torch.rand(BATCH, device=dev, dtype=dtype)
+                    rr  = r_env * torch.sqrt(u.clamp_min(1e-12))
+                    ang = two_pi * v
+                    cand = torch.stack([rr * torch.cos(ang), rr * torch.sin(ang)], dim=-1)
+
+                    if filled == 0:
+                        pts[0] = cand[0]
+                        filled = 1
+                        continue
+
+                    diff = cand.unsqueeze(1) - pts[:filled].unsqueeze(0)
+                    sq   = (diff ** 2).sum(dim=-1)
+                    min_sq, _ = sq.min(dim=1)
+                    ok = min_sq >= s2
+
+                    if ok.any():
+                        idx = torch.nonzero(ok, as_tuple=False)[0, 0]
+                        pts[filled] = cand[idx]
+                        filled += 1
+
+            if filled < E:
+                raise RuntimeError(
+                    f"Poisson template failed for E={E}, s_min={s}. "
+                    f"Consider increasing enemy_cluster_radius or decreasing E/s_min."
+                )
+
+            z = torch.zeros(E, 1, dtype=dtype, device=dev)  # Z 全 0，后面统一处理高度
+            xyz = torch.cat([pts, z], dim=-1)               # [E,3]
+            return _centerize(xyz)
+
         # 组装为 [F,E,3]，一次性并行给所有 env 复用
         templates = torch.stack([
-            # _tmpl_v_wedge_2d(E, s_min),                 # 0
-            _tmpl_rect_2d(E, s_min, aspect=2.0),        # 1
-            _tmpl_square_2d(E, s_min),
-            _tmpl_rect_3d(E, s_min, sz_v,  aspect_xy=2.0),  # 2
-            _tmpl_cube_3d(E, s_min, sz_v),               # 3
-            _tmpl_rect_3d_reverse(E, s_min, sz_v,  aspect_xy=2.0)
-        ], dim=0)  # [4,E,3]
+            _tmpl_v_wedge_2d(E, sz_v),                          # 0
+            _tmpl_rect_2d(E, s_min, aspect=2.0),               # 1
+            _tmpl_square_2d(E, s_min),                         # 2
+            _tmpl_rect_3d(E, s_min, sz_v,  aspect_xy=2.0),     # 3
+            _tmpl_cube_3d(E, s_min, sz_v),                     # 4
+            _tmpl_rect_3d_reverse(E, s_min, sz_v,  aspect_xy=2.0),  # 5
+            # _tmpl_poisson_2d(E, s_min, eta_poisson),           # 6 ← 泊松模板
+        ], dim=0)
+        POISSON_IDX = templates.shape[0] - 1  # 也就是 6
 
         # ---- 每个 env 随机挑一种队形（并行索引）----
         f_idx = torch.randint(low=0, high=templates.shape[0], size=(N,), device=dev)  # [N]
@@ -708,6 +734,22 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         z_abs = origins[:, 2:3].unsqueeze(1) + z_rel       # 绝对高度 [N,E,1]
 
         enemy_pos = torch.cat([xy, z_abs], dim=-1)        # [N,E,3]
+
+        # ---- 对于泊松模板的环境，覆盖高度为“每个敌机独立随机” ----
+        # is_poisson_env = (f_idx == POISSON_IDX)    # [N] bool
+        # if is_poisson_env.any():
+        #     env_poisson = torch.nonzero(is_poisson_env, as_tuple=False).squeeze(-1)  # [N_p]
+        #     Np = env_poisson.shape[0]
+        #     # origins_poisson: 这些 env 的地面高度
+        #     origins_poisson = origins[env_poisson]  # [N_p,3]
+
+        #     # 每个 env、每个敌机一个独立随机高度 ∈ [hmin, hmax]
+        #     z_rand = origins_poisson[:, 2:3].unsqueeze(1) + (
+        #         hmin + torch.rand(Np, E, 1, device=dev, dtype=dtype) * max(1e-6, (hmax - hmin))
+        #     )  # [N_p,E,1]
+
+        #     enemy_pos[env_poisson, :, 2:3] = z_rand  # 覆盖 Z
+
         self.enemy_pos[env_ids] = enemy_pos               # 写回（一次性）
 
     def _set_debug_vis_impl(self, debug_vis: bool):
@@ -758,6 +800,9 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
             if self.ray_marker is not None:
                 self.ray_marker.set_visibility(False)
 
+    def _flatten_agents(self, X: torch.Tensor) -> torch.Tensor:
+        return X.reshape(-1, X.shape[-1])
+
     def _debug_vis_callback(self, event):
         # if self.friendly_visualizer is not None:
         #     pos = self.fr_pos.reshape(-1, 3)  # [N*M,3]
@@ -781,10 +826,9 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         self.scene.clone_environments(copy_from_source=False)
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-        self._rebuild_goal_e()
 
     def _dir_from_yaw_pitch(self, yaw: torch.Tensor, pitch: torch.Tensor) -> torch.Tensor:
-        # z-up: (cos p cos y, cos p sin y, sin p)。返回在z-up世界坐标系下，这个yaw/pitch对应的单位方向向量
+        # z-up: (cos p cos y, cos p sin y, sin p)。返回在z-up世界坐标系下，这个yaw/pitch对应的单位方向向量，目前看没有问题
         cp = torch.cos(pitch); sp = torch.sin(pitch)
         cy = torch.cos(yaw);   sy = torch.sin(yaw)
         return torch.stack([cp * cy, cp * sy, sp], dim=-1)
@@ -937,7 +981,7 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         # self._gimbal_yaw = yaw  # 存储以供云台使用
         # self._gimbal_pitch = pitch
 
-        # 直接拿取姿态角
+        # # 直接拿取姿态角
         self._gimbal_yaw = self._wrap_pi(self.psi_v)
         self._gimbal_pitch = self.theta
         # print("yaw:",yaw)
@@ -964,7 +1008,7 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
 
         rel = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)     # 敌机相对于云台的相对位置向量 [N,M,E,3]
         dx, dy, dz = rel[...,0], rel[...,1], rel[...,2]
-        az  = torch.atan2(dy, dx)                                 # 方位角（azimuth）敌机相对于云台的水平偏角
+        az  = torch.atan2(dy, dx)                                # 方位角（azimuth）敌机相对于云台的水平偏角
         horiz = torch.sqrt((dx*dx + dy*dy).clamp_min(eps))       # 水平距离
         el  = torch.atan2(dz, horiz)                             # 俯仰角（elevation）
         dist = torch.linalg.norm(rel, dim=-1)                    # 欧氏距离
@@ -981,6 +1025,14 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         # print("env 0, friend 0 mask:\n", m[0, 0])         # 打印第0个env、第0个友机看到的敌机
         # print("env 0 all friends:\n", m[0])               # 打印第0个环境所有友机的可见情况
         # print("env 0, friend 0, enemies idx:\n", m[0,0].nonzero())
+
+        # m = in_fov & in_rng & alive_e  # [N_env, N_fr, N_en]
+        # env_id = 0
+        # print("======= env", env_id, "gimbal visible enemies per friend =======")
+        # for fr_id in range(M):
+        #     vis_idx = m[env_id, fr_id].nonzero(as_tuple=True)[0]  # [K] 敌机下标
+        #     print(f"env {env_id}, friend {fr_id}, enemies idx:", vis_idx.tolist())
+        # print("=======================================================")
 
         return in_fov & in_rng & alive_e
 
@@ -1020,6 +1072,14 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         # print("1env 0, friend 0 mask:\n", m[0, 0])         # 打印第0个env、第0个友机看到的敌机
         # print("1env 0 all friends:\n", m[0])               # 打印第0个环境所有友机的可见情况
         # print("1env 0, friend 0, friends idx:\n", m[0,0].nonzero())
+
+        # m = in_fov & in_rng & alive  # [N_env, N_fr, N_en]
+        # env_id = 0
+        # print("======= FRIEND gimbal visible (env", env_id, ") =======")
+        # for fr_i in range(M):
+        #     vis_idx = m[env_id, fr_i].nonzero(as_tuple=True)[0]  # [K]，所有 j 的索引
+        #     print(f"env {env_id}, friend {fr_i} sees friends:", vis_idx.tolist())
+        # print("=======================================================")
 
         return in_fov & in_rng & (~eye) & alive.unsqueeze(2) & alive.unsqueeze(1)
 
@@ -1090,109 +1150,61 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
             if pts_list:
                 self._traj_markers[mi].visualize(translations=torch.cat(pts_list, dim=0))
 
+    def _update_wave_launch(self):
+        if (not getattr(self, "friend_wave_enable", False)) or (self.friend_wave_count <= 1):
+            return
+
+        # 1. 计算每架友机到各自 env 原点的水平距离 dist_to_origin: [N, M]
+        origins_xy = self.terrain.env_origins[:, :2]                 # [N, 2]
+        diff_xy = self.fr_pos[..., :2] - origins_xy.unsqueeze(1)     # [N, M, 2]
+        dist_to_origin = torch.linalg.norm(diff_xy, dim=-1)          # [N, M]
+
+        # 2. 波次信息
+        # wave_idx[m]       : 第 m 架友机所属的波次 (0,1,2,...)
+        # stage[n]          : 第 n 个 env 当前已经发射到第几波
+        wave_idx = self.friend_wave_index                            # [M]
+        stage    = self.friend_wave_stage                            # [N]
+
+        # 3. 当前波次掩码：
+        # mask_cur[n, m] = True 表示：第 n 个 env 中的第 m 架友机属于“该 env 当前波次”
+        # wave_idx.unsqueeze(0) -> [1, M]
+        # stage.unsqueeze(1)    -> [N, 1]
+        mask_cur = (wave_idx.unsqueeze(0) == stage.unsqueeze(1))     # [N, M]
+
+        # 4. 只在当前波次上统计距离最大值
+        #    非当前波次的友机用 0 距离占位（不会影响 max）
+        current_wave_dist = torch.where(mask_cur, dist_to_origin,
+                                        torch.zeros_like(dist_to_origin))    # [N, M]
+        max_dist, _ = current_wave_dist.max(dim=1)                           # [N]
+
+        # 5. 判定哪些 env 需要触发下一波：
+        #    - 还有下一波可发 (stage < friend_wave_count - 1)
+        #    - 当前波次的最远距离 >= 发射阈值
+        has_next_wave = stage < (self.friend_wave_count - 1)         # [N]
+        trigger = has_next_wave & (max_dist >= self.cfg.friend_wave_launch_dist)          # [N]
+
+        if not trigger.any():
+            return
+
+        # 6. 对需要触发的 env，波次计数 +1
+        stage_new = torch.where(trigger, stage + 1, stage)
+        self.friend_wave_stage = stage_new
+
+        # 7. 新波次掩码：
+        #    mask_next[n, m] = True 表示：
+        #       - 第 n 个 env 触发了下一波 (trigger[n] 为 True)
+        #       - 第 m 架友机属于该 env 的“新波次 stage_new[n]”
+        mask_next = (
+            (wave_idx.unsqueeze(0) == stage_new.unsqueeze(1)) &      # 属于该 env 的新波次
+            trigger.unsqueeze(1)                                     # 且该 env 被触发
+        )                                                            # [N, M]
+
+        # 8. 解冻这些友机（把它们从 friend_frozen 中移除）
+        self.friend_frozen = self.friend_frozen & (~mask_next)
+
     # —————————————————— ↑↑↑ 工具/可视化区 ↑↑↑ ——————————————————
 
     # ============================ MARL交互实现 ============================
-    {
-    # def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
-    #     v_max = float(self.cfg.Vm_max)
-    #     for i, ag in enumerate(self.possible_agents):
-    #         a = actions[ag].to(self.device, self.fr_pos.dtype)   # [N,3]
-    #         a = a[:, :3].clamp(-1.0, 1.0)
-    #         v_cmd = a * v_max                                    # [N,3]
-    #         self._fr_vel_cmd[:, i, :] = v_cmd                    # 对所有 env，把第 i 架友机的速度指令设为 v_cmd
-
-    # def _apply_action(self):
-    #     dt = float(self.physics_dt)
-    #     is_first_substep = ((self._sim_step_counter - 1) % self.cfg.decimation) == 0
-    #     if is_first_substep:
-    #         self._newly_frozen_friend[:] = False
-    #         self._newly_frozen_enemy[:]  = False
-
-    #     fr_pos0 = self.fr_pos.clone()           # [N,M,3]
-    #     en_pos0 = self.enemy_pos.clone()        # [N,E,3]
-
-    #     # # 会出现多打一的情况
-    #     # diff = self.fr_pos.unsqueeze(2) - self.enemy_pos.unsqueeze(1)   # [N,M,E,3]
-    #     # dist = torch.linalg.norm(diff, dim=-1)                          # [N,M,E]
-    #     # hit_pair = (dist <= self.cfg.hit_radius) \
-    #     #         & (~self.friend_frozen).unsqueeze(2) \
-    #     #         & (~self.enemy_frozen).unsqueeze(1)                   # [N,M,E]
-    #     # hit_friend = hit_pair.any(dim=2)   # [N,M]
-    #     # hit_enemy  = hit_pair.any(dim=1)   # [N,E]
-
-    #     # self._newly_frozen_friend |= hit_friend
-    #     # self._newly_frozen_enemy  |= hit_enemy
-    #     # self.friend_frozen        |= hit_friend
-    #     # self.enemy_frozen         |= hit_enemy
-
-    #     fz0 = self.friend_frozen.clone()
-    #     ez0 = self.enemy_frozen.clone()
-    #     active_pair0 = (~fz0).unsqueeze(2) & (~ez0).unsqueeze(1)  # [N,M,E]
-    #     if active_pair0.any():
-    #         diff0 = fr_pos0.unsqueeze(2) - en_pos0.unsqueeze(1)   # [N,M,E,3]
-    #         dist0 = torch.linalg.norm(diff0, dim=-1)              # [N,M,E]
-    #         hit_pair0 = (dist0 <= self.cfg.hit_radius) & active_pair0               # [N,M,E]
-
-    #         # 敌机是否被命中（沿友机维度），不能用hit_pair0.any(dim=2)因为这样只知道友机打中了，但是会出现多友机命中同一敌机的情况，需要选最近的友机作为击中者 
-    #         newly_hitted_enemy = hit_pair0.any(dim=1)             # [N,E] 返回的是第N个环境的第E个敌机是否被命中。沿着友机维度M看，有没有命中该敌机，从上往下看，再从左往右。.any(dim=1)传入的 dim 是被消掉（被扫描）的那一轴；剩下的轴就是你“固定住”的索引。
-
-    #         if newly_hitted_enemy.any():
-    #             # —— 为每个“本步新冻敌机”选最近友机作为击中者 ——
-    #             INF = torch.tensor(float("inf"), device=self.device, dtype=dist0.dtype)
-    #             dist_masked0 = torch.where(hit_pair0, dist0, INF)     # [N,M,E] 存储的是命中对的距离，未命中对为 +inf
-    #             hitter_idx   = dist_masked0.argmin(dim=1)             # [N,E]存的是第N个环境中敌机E被哪个友机打中的友机索引。对每个(n,e)，在友机维M上找最小距离对应的友机索引j*，即击中者，二维矩阵就是竖着那一列找最小的索引。如果有一列全是+inf（即该敌机未被任何友机命中），argmin会返回0
-
-    #             # newly_hitted_enemy形状是[N, E]（环境×敌机的布尔掩码）。newly_hitted_enemy.nonzero(as_tuple=False) 返回形状[K, 2]的整型张量，每一行是一个(n, e)。再 .T 转置成 [2, K]
-    #             env_idx, enemy_idx = newly_hitted_enemy.nonzero(as_tuple=False).T       # [K]，将第N个环境中被击中的第E个敌机的环境与敌机的索引拿出来。env_idx是这些新命中敌机的场景索引n列表，enemy_idx是对应敌机索引e列表（长度为K），一维。可以避免dist_masked0中未命中对的+inf，返回索引0的干扰
-    #             friend_idx = hitter_idx[env_idx, enemy_idx]              # [K]，取出每个“新命中敌机”的击中者友机索引 j*，用上面拿出来的索引去取打中敌机的友机索引
-
-    #             # —— 仅冻结击中者（友机侧）和被击中敌机（敌机侧） ——
-    #             hit_friend_mask = torch.zeros_like(self.friend_frozen)    # [N,M] bool
-    #             hit_friend_mask[env_idx, friend_idx] = True               # 标记第env_idx个环境中，第friend_idx个友机击中了敌机
-
-    #             # —— 只把击中者记为“新冻友机”，并写捕获点 ——
-    #             self._newly_frozen_friend |= hit_friend_mask               # [N,M] 用于记录当前步新冻友机，在奖励阶段用
-    #             self._newly_frozen_enemy |= newly_hitted_enemy             # [N,E] 记录“本步新冻敌机”,在奖励阶段用
-
-    #             self.enemy_capture_pos[newly_hitted_enemy]      = en_pos0[newly_hitted_enemy]
-    #             self.friend_capture_pos[env_idx, friend_idx]    = en_pos0[newly_hitted_enemy]
-    #             self.friend_frozen |= hit_friend_mask                     # 冻结击中者,self.friend_frozen用于全局记录冻结状态
-    #             self.enemy_frozen  |= newly_hitted_enemy                  # 冻结被击中者
-
-    #     # 更新后的冻结掩码
-    #     fz = self.friend_frozen       # [N,M]
-    #     ez = self.enemy_frozen        # [N,E]
-
-    #     # ===================== 2. 友机动力学：直接用世界系速度 vx,vy,vz =====================
-    #     fr_vel_cmd = self._fr_vel_cmd                                  # [N,M,3]
-    #     fr_vel_w_step = torch.where(fz.unsqueeze(-1), torch.zeros_like(fr_vel_cmd), fr_vel_cmd)  # [N,M,3]
-    #     fr_pos1 = fr_pos0 + fr_vel_w_step * dt                          # [N,M,3]
-
-    #     # ===================== 3. 敌机动力学：沿 _axis_hat 指向原点水平飞行 =====================
-    #     v_dir = (-self._axis_hat).unsqueeze(1).expand(-1, self.E, -1)   # [N,E,3]
-    #     enemy_vel_step = v_dir * float(self.cfg.enemy_speed)           # [N,E,3]
-    #     enemy_vel_step = torch.where(ez.unsqueeze(-1), torch.zeros_like(enemy_vel_step), enemy_vel_step)
-    #     en_pos1 = en_pos0 + enemy_vel_step * dt                            # [N,E,3]
-
-    #     # ===================== 4. 冻结后的“锁定在捕获点”处理 =====================
-    #     if fz.any():
-    #         fr_pos1 = torch.where(fz.unsqueeze(-1), self.friend_capture_pos, fr_pos1)
-    #     if ez.any():
-    #         en_pos1 = torch.where(ez.unsqueeze(-1), self.enemy_capture_pos, en_pos1)
-
-    #     # ===================== 5. 写回状态、云台 & 可视化 =====================
-    #     self.fr_vel_w  = fr_vel_w_step
-    #     self.enemy_vel = enemy_vel_step
-    #     self.fr_pos    = fr_pos1
-    #     self.enemy_pos = en_pos1
-
-    #     # 云台控制 / 敌机质心缓存 / 轨迹可视化
-    #     self._gimbal_control()
-    #     self._refresh_enemy_cache()
-    #     self._update_traj_vis()
-    }
-
     def _pre_physics_step(self, actions: dict[str, torch.Tensor]) -> None:
         for i, ag in enumerate(self.possible_agents):
             a = actions[ag].to(self.device, self.fr_pos.dtype)          # [N,3]
@@ -1223,45 +1235,37 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
 
         # ---------- 判断是否在步首命中 ----------
         active_pair0 = (~fz0).unsqueeze(2) & (~ez0).unsqueeze(1)  # [N,M,E]
-        # print("~fz0:", (~fz0))
-        # print("~ez0:", (~ez0))
-        # print("active_pair0:", active_pair0)
         if active_pair0.any():
             diff0 = fr_pos0.unsqueeze(2) - en_pos0.unsqueeze(1)   # [N,M,E,3]
-            # print("diff0:", diff0)
             dist0 = torch.linalg.norm(diff0, dim=-1)              # [N,M,E]
             hit_pair0 = (dist0 <= r) & active_pair0               # [N,M,E]
-            # print("2dist0:", dist0)
-            # print("hit_pair0:", hit_pair0)
-            # 敌机是否被命中（沿友机维度），不能用hit_pair0.any(dim=2)因为这样只知道友机打中了，但是会出现多友机命中同一敌机的情况，需要选最近的友机作为击中者 
+            # 敌机是否被命中（沿友机维度），不能用hit_pair0.any(dim=2)因为这样只知道友机打中了，但是会出现多友机命中同一敌机的情况，需要选最近的友机作为击中者
             newly_hitted_enemy = hit_pair0.any(dim=1)             # [N,E] 返回的是第N个环境的第E个敌机是否被命中。沿着友机维度M看，有没有命中该敌机，从上往下看，再从左往右。.any(dim=1)传入的 dim 是被消掉（被扫描）的那一轴；剩下的轴就是你“固定住”的索引。
-            # print("newly_hitted_enemy:", newly_hitted_enemy)
             if newly_hitted_enemy.any():
                 # print("hit!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                 # —— 为每个“本步新冻敌机”选最近友机作为击中者 ——
                 INF = torch.tensor(float("inf"), device=self.device, dtype=dist0.dtype)
                 dist_masked0 = torch.where(hit_pair0, dist0, INF)     # [N,M,E] 存储的是命中对的距离，未命中对为 +inf
                 hitter_idx   = dist_masked0.argmin(dim=1)             # [N,E]存的是第N个环境中敌机E被哪个友机打中的友机索引。对每个(n,e)，在友机维M上找最小距离对应的友机索引j*，即击中者，二维矩阵就是竖着那一列找最小的索引。如果有一列全是+inf（即该敌机未被任何友机命中），argmin会返回0
-                # print("dist_masked0:", dist_masked0)
-                # print("hitter_idx:", hitter_idx)
                 # newly_hitted_enemy形状是[N, E]（环境×敌机的布尔掩码）。newly_hitted_enemy.nonzero(as_tuple=False) 返回形状[K, 2]的整型张量，每一行是一个(n, e)。再 .T 转置成 [2, K]
                 env_idx, enemy_idx = newly_hitted_enemy.nonzero(as_tuple=False).T       # [K]，将第N个环境中被击中的第E个敌机的环境与敌机的索引拿出来。env_idx是这些新命中敌机的场景索引n列表，enemy_idx是对应敌机索引e列表（长度为K），一维。可以避免dist_masked0中未命中对的+inf，返回索引0的干扰
                 friend_idx = hitter_idx[env_idx, enemy_idx]              # [K]，取出每个“新命中敌机”的击中者友机索引 j*，用上面拿出来的索引去取打中敌机的友机索引
-                # print("env_idx:", env_idx)
-                # print("enemy_idx:", enemy_idx)
-                # print("friend_idx:", friend_idx)
+
                 # —— 仅冻结击中者（友机侧）和被击中敌机（敌机侧） ——
                 hit_friend_mask = torch.zeros_like(self.friend_frozen)    # [N,M] bool
                 hit_friend_mask[env_idx, friend_idx] = True               # 标记第env_idx个环境中，第friend_idx个友机击中了敌机
-                # print("hit_friend_mask:", hit_friend_mask)
+
                 # —— 只把击中者记为“新冻友机”，并写捕获点 ——
                 self._newly_frozen_friend |= hit_friend_mask               # [N,M] 用于记录当前步新冻友机，在奖励阶段用
                 self._newly_frozen_enemy |= newly_hitted_enemy             # [N,E] 记录“本步新冻敌机”,在奖励阶段用
-                # print("_newly_frozen_friend:", self._newly_frozen_friend)
-                self.enemy_capture_pos[newly_hitted_enemy]      = en_pos0[newly_hitted_enemy]
-                self.friend_capture_pos[env_idx, friend_idx]    = en_pos0[newly_hitted_enemy]
+
+                # self.enemy_capture_pos[newly_hitted_enemy]      = en_pos0[newly_hitted_enemy]
+                # self.friend_capture_pos[env_idx, friend_idx]    = en_pos0[newly_hitted_enemy]
                 self.friend_frozen |= hit_friend_mask                     # 冻结击中者,self.friend_frozen用于全局记录冻结状态
                 self.enemy_frozen  |= newly_hitted_enemy                  # 冻结被击中者
+
+        # ---------- 分波发射：基于当前位置更新波次并解冻新一波 ----------
+        self._update_wave_launch()
 
         fz = self.friend_frozen
         ez = self.enemy_frozen
@@ -1292,13 +1296,11 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         fr_vel_w_step = y_up_to_z_up(V_m)
 
         # 敌机速度（始终沿-axis_hat方向，以恒定速度前进，冻结为0）
-        v_dir = -self._axis_hat                               # [N,3]
-        v_dir_xy = v_dir[..., :2]                             # [N,2]
-        norm_xy = torch.linalg.norm(v_dir_xy, dim=-1, keepdim=True).clamp_min(1e-6)
-        v_dir_xy = v_dir_xy / norm_xy                         # [N,2]
-        v_dir_level = torch.cat([v_dir_xy, torch.zeros_like(v_dir[..., 2:3])], dim=-1)         # [N,3]
-        v_dir_level = v_dir_level.unsqueeze(1).expand(-1, self.E, -1)  # [N,E,3]
-        enemy_vel_step = v_dir_level * float(self.cfg.enemy_speed)     # [N,E,3]
+        v_enemy_xy = -self._axis_hat_xy
+        zeros_z = torch.zeros_like(v_enemy_xy[:, :1]) 
+        v_move_3d = torch.cat([v_enemy_xy, zeros_z], dim=-1)
+        v_move_expanded = v_move_3d.unsqueeze(1).expand(-1, self.E, -1)
+        enemy_vel_step = v_move_expanded * float(self.cfg.enemy_speed)
         enemy_vel_step = torch.where(ez.unsqueeze(-1), torch.zeros_like(enemy_vel_step), enemy_vel_step)
 
         # ---------- 推进 ----------
@@ -1340,29 +1342,68 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         friend_too_high_penalty_weight = float(getattr(self.cfg, "friend_too_high_penalty_weight", 0.0))  # 友机飞得过高惩罚权重
         friend_too_low_penalty_weight  = float(getattr(self.cfg, "friend_too_low_penalty_weight", 0.0))  # 友机飞得过高惩罚权重
         enemy_all_killed_reward_weight = float(getattr(self.cfg, "all_kill_weight", 100.0))
-        # --- 分配 / 覆盖相关权重 ---
-        assign_chase_weight = float(getattr(self.cfg, "assign_chase_reward_weight", 0.008))
-        assign_coverage_weight = float(getattr(self.cfg, "assign_coverage_reward_weight", 0.01))
-        assign_dup_penalty_weight = float(getattr(self.cfg, "assign_dup_penalty_weight", 0.2))
-
+        target_align_weight = float(getattr(self.cfg, "w_target_align", 0.01))  # 速度对齐最近目标方向的权重
+        leak_penalty_weight = float(getattr(self.cfg, "leak_penalty_weight", 0.05))  # 漏敌机惩罚权重
+        leak_margin         = float(getattr(self.cfg, "leak_margin", 1.0))          # 漏敌机轴向裕度
         # --- 活跃掩码 / 质心 ---
         friend_active    = (~self.friend_frozen)                     # [N,M] bool
+        enemy_active     = (~self.enemy_frozen)                      # [N,E] bool
         enemy_active_any = self._enemy_active_any                    # [N]   bool
+        vis_fe = self._gimbal_enemy_visible_mask()                   # [N, M, E]
+        vis_ff = self._gimbal_friend_visible_mask()                  # [N, M, M]
 
         # ———————————————————— 质心接近增量（距离减小为正） ————————————————————
-        centroid = self._enemy_centroid.unsqueeze(1).expand(N, M, 3)                    # [N,M,3]
-        diff = centroid - self.fr_pos                                       # [N,M,3]
-        dist_now = torch.linalg.norm(diff, dim=-1)                     # [N,M] 当前友机距离质心的距离
+        centroid = self._enemy_centroid.unsqueeze(1).expand(N, M, 3)                                                # [N,M,3]
+        diff = centroid - self.fr_pos                                                                               # [N,M,3]
+        dist_now = torch.linalg.norm(diff, dim=-1)                                                                  # [N,M] 当前友机距离质心的距离
         dist_to_centroid_now = torch.where(enemy_active_any.unsqueeze(1), dist_now, self.prev_dist_centroid)        # 当敌机全灭时，保持距离不变，避免最后一步大幅负增量
-        delta_dist = self.prev_dist_centroid - dist_to_centroid_now     # [N,M]
-        gate_c = (dist_to_centroid_now > R0).float()
-        centroid_each = delta_dist * gate_c * friend_active.float()       # 只计未冻结友机 [N,M]
+        delta_dist = self.prev_dist_centroid - dist_to_centroid_now                                                 # [N,M]
+        has_lock = vis_fe.any(dim=-1)                                                                               # [N, M]
+        gate_lock = (~has_lock).float()
+        final_centroid_gate = (dist_to_centroid_now > R0).float() * gate_lock
+        centroid_each = delta_dist * gate_lock * friend_active.float()                                              # [N,M] 只计未冻结友机
 
         # ———————————————————— 速度朝向质心的对齐奖励（正向投影，单位m/s）————————————————————
         e_hat_c = torch.where(dist_to_centroid_now.unsqueeze(-1) > 1e-6, diff / dist_to_centroid_now.unsqueeze(-1), torch.zeros_like(diff))  # [N,M,3]
         v = self.fr_vel_w                                                # [N,M,3]
         v_proj_c = (v * e_hat_c).sum(dim=-1)                             # [N,M] (m/s)，(a*b).sum(dim=-1)表示向量点积,但由于b是单位向量，所以是投影长度
-        vel_to_centroid_each = friend_active.float() * gate_c * torch.clamp(v_proj_c, min=0.0) # [N,M]
+        vel_to_centroid_each = friend_active.float() * final_centroid_gate * torch.clamp(v_proj_c, min=0.0) # [N,M]
+
+        # ———————————————————— 奖励agent靠近最近的敌机单位向量 ————————————————————
+        target_align_each = torch.zeros((N, M), device=dev, dtype=dtype)
+        if E > 0 and target_align_weight != 0.0:
+            eps = 1e-9
+            rel_all  = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)  # [N,M,E,3]
+            dist_all = torch.linalg.norm(rel_all, dim=-1, keepdim=True).clamp_min(eps)
+            dir_all  = rel_all / dist_all                                       # [N,M,E,3]
+
+            cam_dir = self._dir_from_yaw_pitch(self._gimbal_yaw, self._gimbal_pitch)  # [N,M,3]
+            cam_dir = cam_dir.unsqueeze(2)                                              # [N,M,1,3]
+
+            cos_ang = (cam_dir * dir_all).sum(dim=-1)
+            cos_ang = cos_ang.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
+            angle   = torch.acos(cos_ang)                                              # [N,M,E]
+
+            large_angle = math.pi
+            angle_for_sort = torch.where(vis_fe,angle,torch.full_like(angle, large_angle),)      # [N,M,E]
+
+            sort_idx = angle_for_sort.argsort(dim=-1)                                  # [N,M,E]
+
+            # 视野内的单位向量
+            e_hat_all = dir_all * vis_fe.unsqueeze(-1).float()                         # [N,M,E,3]
+
+            # 最近那个
+            first_idx = sort_idx[..., 0:1]                                             # [N,M,1]
+            nearest_dir = torch.gather(e_hat_all,2,first_idx.unsqueeze(-1).expand(-1, -1, -1, 3),).squeeze(2)            # [N,M,3]
+
+            # 对于“一个敌机都没看到”的友机，把方向置 0，避免给错奖励
+            has_any = vis_fe.any(dim=-1)                                               # [N,M]
+            nearest_dir = torch.where(has_any.unsqueeze(-1),nearest_dir,torch.zeros_like(nearest_dir),)           # [N,M,3]
+
+            # 友机速度沿该方向的投影（负值截断为 0，只奖励正向靠近）
+            v = self.fr_vel_w                                                          # [N,M,3]
+            v_proj_target = (v * nearest_dir).sum(dim=-1)                              # [N,M]
+            target_align_each = friend_active.float() * torch.clamp(v_proj_target, min=0.0)
 
         # ———————————————————— 命中奖励 ————————————————————
         per_agent_hit = self._newly_frozen_friend.float()              # [N,M]
@@ -1373,111 +1414,70 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         # ———————————————————— 导引头视野内不能有友机惩罚 ————————————————————
         alive_friend_nums  = friend_active.sum(dim=1).to(dtype)                                   # [N] sum(dim=1)意味着沿着第二维求和，在[N,M]中也就是沿着第一行从左到右求和，行不变列变。sum(dim=0)就是沿着第一列求和。
         alive_friend_nums_ = (alive_friend_nums - 1.0).clamp_min(1.0).unsqueeze(1)                # [N,1] 活着的友机最多能看到友机数目
-        vis_ff = self._gimbal_friend_visible_mask().float()                                       # [N,M,M] i看见j
-        pen_friend_each_cnt = vis_ff.sum(dim=2)                                                   # [N,M] 计算每个友机看到的友机数，沿着第三维M求和，第一行从左到右加起来
+        pen_friend_each_cnt = vis_ff.float().sum(dim=2)                                                   # [N,M] 计算每个友机看到的友机数，沿着第三维M求和，第一行从左到右加起来
         penalty_friend_each = (pen_friend_each_cnt / alive_friend_nums_) * friend_active.float()  # [N,M] ∈[0,1] 友->友可见（遮挡）占比：每机看到的友机数 / 它最多能看到的友机数
-        # if pen_friend_each_cnt.any():
-        #     print("friend in my sight!!!")
 
         # ———————————————————— 导引头视野内敌机数目奖励 ————————————————————
         E_alive = (~self.enemy_frozen).sum(dim=1).to(dtype)                             # [N]
         den_e_each = E_alive.clamp_min(1.0).unsqueeze(1)                                # [N,1]
-        vis_fe = self._gimbal_enemy_visible_mask().float()                              # [N,M,E] bool
-        enemy_count_each_cnt = vis_fe.sum(dim=-1)                                       # [N,M]
+        enemy_count_each_cnt = vis_fe.float().sum(dim=-1)                                       # [N,M]
         enemy_count_each = (enemy_count_each_cnt / den_e_each) * friend_active.float()  # [N,M] ∈[0,1]
 
-        # ———————————————————— 敌人抵达目标点惩罚 ————————————————————
-        diff_e = self.enemy_pos[..., :2] - self._goal_e.unsqueeze(1)[..., :2]                                   # [N,E,2]
-        dist2_e_xy = diff_e.square().sum(dim=-1)                                                                # [N,E]
-        in_goal_active_xy = (dist2_e_xy < (float(self.cfg.enemy_goal_radius) ** 2)) & (~self.enemy_frozen)      # [N,E]
-        enemy_reach_goal_any = in_goal_active_xy.any(dim=1, keepdim=True).float()
+        # ———————————————————— 敌人质心抵达目标点惩罚 ————————————————————
+        cen = self._enemy_centroid                                                                # [N,3]
+        diff_c = cen[..., :2] - self._goal_e[..., :2]                                             # [N,2]
+        dist2_c = diff_c.square().sum(dim=-1)                                                     # [N]
+        enemy_goal_any = dist2_c < (float(self.cfg.enemy_goal_radius) ** 2)                       # [N] bool
+        enemy_reach_goal_any = enemy_goal_any.float().unsqueeze(1) * friend_active.float() 
 
         # ———————————————————— 友机飞的过高/低惩罚 ————————————————————
         z = self.fr_pos[:, :, 2]                                              # [N,M] 友机高度
-        z_cen = self._enemy_centroid[:, 2].unsqueeze(1)                       # [N,1]
-        overshoot_z = (z - (z_cen + 10.0)).clamp_min(0.0)                     # [N,M]
+        z_enemy_max, _ = self.enemy_pos[:, :, 2].max(dim=1)                       # [N] 每个环境中敌机的最高高度
+        z_enemy_max = z_enemy_max.unsqueeze(1)                                    # [N,1]
+        overshoot_z = (z - (z_enemy_max + 1.0)).clamp_min(0.0)                     # [N,M]
         penalty_friend_high_each = overshoot_z * friend_active.float()        # [N,M]
-        lowshoot_z = (0.15 - z).clamp_min(0.0)                                # [N,M]
-        penalty_friend_low_each = lowshoot_z * friend_active.float()          # [N,M]
+        gate_low = (dist_to_centroid_now < 50.0).float()
+        lowshoot_z = (7.0 - z).clamp_min(0.0)                                # [N,M]
+        penalty_friend_low_each = lowshoot_z * friend_active.float() * gate_low          # [N,M]
 
+        # ———————————————————— overshoot惩罚 ————————————————————
+        leak_each = torch.zeros((N, M), device=dev, dtype=dtype)              # [N,M]
+        if leak_penalty_weight != 0.0 and E > 0:
+            gk_3d   = self._goal_e                  # [N,3]
+            axis_3d = self._axis_hat                # [N,3]
 
-        # ———————————————————— 基于速度投影的一对一目标分配奖励 ————————————————————
-        intercept_reward_each = torch.zeros((N, M), device=dev, dtype=dtype)
-        if self.E > 0 and (assign_chase_weight != 0.0 or assign_dup_penalty_weight != 0.0):
-            vis_fe = self._gimbal_enemy_visible_mask()                                  # [N,M,E] bool
+            axis_xy  = axis_3d[..., :2]
+            norm_xy  = torch.linalg.norm(axis_xy, dim=-1, keepdim=True).clamp_min(1e-6)
+            axis_hat = torch.cat(
+                [axis_xy / norm_xy, torch.zeros_like(axis_3d[..., 2:3])],
+                dim=-1,
+            )                                      # [N,3]
 
-            # 友机 -> 敌机 相对向量 / 距离 / 方向
-            rel_fe  = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)            # [N,M,E,3]
-            dist_fe = torch.linalg.norm(rel_fe, dim=-1).clamp_min(1e-9)                 # [N,M,E]
-            e_hat   = rel_fe / dist_fe.unsqueeze(-1)                                    # [N,M,E,3]
+            # 沿目标->敌团轴的标量投影
+            sf = ((self.fr_pos    - gk_3d.unsqueeze(1)) * axis_hat.unsqueeze(1)).sum(dim=-1)  # [N,M]
+            se = ((self.enemy_pos - gk_3d.unsqueeze(1)) * axis_hat.unsqueeze(1)).sum(dim=-1)  # [N,E]
 
-            # 速度对敌机方向的正向投影
-            v        = self.fr_vel_w.unsqueeze(2)                                       # [N,M,1,3]
-            proj     = (v * e_hat).sum(dim=-1)                                          # [N,M,E]
-            proj_pos = torch.clamp(proj, min=0.0)                                       # 只要正向
+            INF     = torch.tensor(float("inf"),     dtype=dtype, device=dev)
+            NEG_INF = torch.tensor(float("-inf"),    dtype=dtype, device=dev)
+            sf_mask = torch.where(friend_active, sf, INF)          # 冻结友机用 +inf 屏蔽
+            se_mask = torch.where(enemy_active,  se, NEG_INF)      # 冻结敌机用 -inf 屏蔽
 
-            # 只保留“能看到”的敌机对
-            proj_masked = torch.where(vis_fe, proj_pos, torch.zeros_like(proj_pos))     # [N,M,E]
+            # friend_min: 还活着的友机里，最靠“后面”的那个（离目标最近）
+            friend_min = sf_mask.min(dim=1, keepdim=True).values   # [N,1]
 
-            # ——— 每个友机“只选一个目标”：对敌机维度做 argmax ———
-            # best_proj[n,m]: 友机 m 当前最想追的敌机的投影值
-            # best_e[n,m]:    对应敌机索引 e
-            best_proj, best_e = proj_masked.max(dim=-1)                                  # [N,M], [N,M]
+            # “漏敌机”：敌机比 friend_min 更靠近目标 leak_margin 以上
+            leaked_enemy = enemy_active & (se_mask < (friend_min - leak_margin))  # [N,E] bool
+            num_leaked   = leaked_enemy.float().sum(dim=1, keepdim=True)          # [N,1]
 
-            # 没有任何可追目标（全 0）的友机不参与
-            valid_friend = (best_proj > 0.0) & friend_active                              # [N,M]
-
-            # 构造 friend->enemy 的 one-hot 认领矩阵
-            one_hot_fe = torch.zeros((N, M, self.E), device=dev, dtype=torch.bool)      # [N,M,E]
-            if valid_friend.any():
-                n_idx, m_idx = torch.nonzero(valid_friend, as_tuple=True)               # 所有有目标的友机
-                e_idx = best_e[n_idx, m_idx]                                            # 各自锁定的敌机
-                one_hot_fe[n_idx, m_idx, e_idx] = True
-
-            # 每个敌机被多少友机锁定
-            watchers_per_enemy = one_hot_fe.sum(dim=1)                                  # [N,E]
-            # 只统计存活敌机
-            watchers_per_enemy = watchers_per_enemy * (~self.enemy_frozen).float()      # [N,E]
-
-            # ————— 在同一个敌机上选出“winner”：投影最大的那架 —————
-            # best_proj_fe[n,m,e] = 若 m 锁定 e，则为该 m 的 best_proj，否则为 0
-            best_proj_fe = one_hot_fe.float() * best_proj.unsqueeze(-1)                 # [N,M,E]
-
-            # winner_friend_idx[n,e]：在敌机 e 上投影最大的 friend 索引 m
-            _, winner_friend_idx = best_proj_fe.max(dim=1)                              # [N,E]
-
-            has_watcher = watchers_per_enemy > 0.0          # [N,E]
-            multi_watch = watchers_per_enemy > 1.0          # [N,E]
-
-            winner_mask_fe = torch.zeros_like(one_hot_fe, dtype=torch.bool)  # [N,M,E]
-            if has_watcher.any():
-                nn, ee = torch.nonzero(has_watcher, as_tuple=True)
-                mm = winner_friend_idx[nn, ee]
-                winner_mask_fe[nn, mm, ee] = True
-
-            # loser 只在“多人抢同一敌机”时才算 loser
-            loser_mask_fe = one_hot_fe & (~winner_mask_fe) & multi_watch.unsqueeze(1)
-            dup_friend = loser_mask_fe.any(dim=-1).float()
-
-            # 只对活着的友机生效
-            dup_friend = dup_friend * friend_active.float()
-            best_proj  = best_proj * friend_active.float()
-
-            # ————— 拦截奖励 + 抢目标惩罚 —————
-            # 1) 追击对齐奖励：自己当前目标上投影越大越好
-            r_chase_each = assign_chase_weight * best_proj                                           # [N,M]
-
-            # 2) 抢目标惩罚：在多少个敌机上当 loser 就扣多少次
-            r_dup_each   = - assign_dup_penalty_weight * dup_friend                                    # [N,M]
-
-            intercept_reward_each = r_chase_each + r_dup_each
-
+            leak_each = num_leaked * friend_active.float()                        # [N,M]
 
         # --- 合成 per-agent reward ---
         # 质心接近
         r_each = centroid_weight * centroid_each                                  # [N,M]
         # 速度朝质心对齐
         r_each = r_each + v_to_c_weight * vel_to_centroid_each                    # [N,M]
+        # 靠近最近敌机单位向量
+        r_each = r_each + target_align_weight * target_align_each                  # [N,M]
         # 拦截奖励
         r_each = r_each + hit_weight * per_agent_hit                              # [N,M]
         # 云台项
@@ -1488,8 +1488,8 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         r_each = r_each + mission_success * enemy_all_killed_reward_weight  # [N,M]
         # 友机飞得过高/低惩罚
         r_each = r_each - friend_too_high_penalty_weight * penalty_friend_high_each - friend_too_low_penalty_weight * penalty_friend_low_each  # [N,M]
-        # 累加到总奖励
-        r_each = r_each + intercept_reward_each
+        # overshoot
+        r_each = r_each - leak_penalty_weight * leak_each
         # --- 写出字典 ---
         rewards = {agent: r_each[:, i] for i, agent in enumerate(self.possible_agents)}
         # --- 状态缓存/一次性标志 ---
@@ -1497,13 +1497,71 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         self._newly_frozen_enemy[:]  = False
         self._newly_frozen_friend[:] = False
 
+        # ----------------------debug ----------------------
+        r_centroid     = centroid_weight * centroid_each                                 # [N,M]
+        r_v_to_c       = v_to_c_weight * vel_to_centroid_each                            # [N,M]
+        r_hit          = hit_weight * per_agent_hit                                      # [N,M]
+        r_gimbal_f     = - fb_weight * penalty_friend_each                               # [N,M]
+        r_gimbal_e     = ec_weight * enemy_count_each                                    # [N,M]
+        r_enemy_goal   = - enemy_reach_goal_weight * enemy_reach_goal_any                # [N,M]
+        r_all_killed   = mission_success * enemy_all_killed_reward_weight                # [N,M]
+        r_target_align = target_align_weight * target_align_each                         # [N,M]
+        r_overshoot    = - leak_penalty_weight * leak_each                               # [N,M]
+        r_fr_high      = - friend_too_high_penalty_weight * penalty_friend_high_each     # [N,M]
+        r_fr_low       = - friend_too_low_penalty_weight  * penalty_friend_low_each      # [N,M]
+
+        # 总 reward（和 r_each 一致）
+        reward = (
+            r_centroid
+            + r_v_to_c
+            + r_hit
+            + r_gimbal_f
+            + r_gimbal_e
+            + r_enemy_goal
+            + r_all_killed
+            + r_target_align
+            + r_overshoot
+            + r_fr_high
+            + r_fr_low
+        )  # [N,M]
+
+        # --- episode 级累计统计 ---
+        if "total" not in self.episode_sums:
+            base = torch.zeros_like(reward)
+            self.episode_sums["total"]           = base.clone()
+            self.episode_sums["centroid"]        = base.clone()
+            self.episode_sums["vel_to_centroid"] = base.clone()
+            self.episode_sums["hit"]             = base.clone()
+            self.episode_sums["gimbal_f"]        = base.clone()
+            self.episode_sums["gimbal_e"]        = base.clone()
+            self.episode_sums["enemy_goal"]      = base.clone()
+            self.episode_sums["all_killed"]      = base.clone()
+            self.episode_sums["target_align"]    = base.clone()
+            self.episode_sums["overshoot"]       = base.clone()
+            self.episode_sums["friend_too_high"] = base.clone()
+            self.episode_sums["friend_too_low"]  = base.clone()
+
+        self.episode_sums["total"]           += reward
+        self.episode_sums["centroid"]        += r_centroid
+        self.episode_sums["vel_to_centroid"] += r_v_to_c
+        self.episode_sums["hit"]             += r_hit
+        self.episode_sums["gimbal_f"]        += r_gimbal_f
+        self.episode_sums["gimbal_e"]        += r_gimbal_e
+        self.episode_sums["enemy_goal"]      += r_enemy_goal
+        self.episode_sums["all_killed"]      += r_all_killed
+        self.episode_sums["target_align"]    += r_target_align
+        self.episode_sums["overshoot"]       += r_overshoot
+        self.episode_sums["friend_too_high"] += r_fr_high
+        self.episode_sums["friend_too_low"]  += r_fr_low
+        # ----------------------debug----------------------
+
         return rewards
 
     def _get_dones(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         N         = self.num_envs
         device    = self.device
         r2_goal = float(self.cfg.enemy_goal_radius) ** 2
-        xy_max2 = 200.0 ** 2
+        xy_max2 = float(self.cfg.enemy_cluster_ring_radius + 50.0) ** 2
         # ---------- 基本终止判据（逐env） ----------
         success_all_enemies = self.enemy_frozen.all(dim=1)                        # [N] 敌全灭（友军成功），all函数用于判断输入中个张量是否都是True
         if success_all_enemies.any():
@@ -1512,7 +1570,7 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         z = self.fr_pos[:, :, 2]                                                  # 对每个环境、每个友机，都取坐标向量的索引 2（即第 3 个分量）也就是飞机的z高度
         z_enemy_max, _ = self.enemy_pos[:, :, 2].max(dim=1)                       # [N] 每个环境中敌机的最高高度
         z_enemy_max = z_enemy_max.unsqueeze(1)                                    # [N,1]
-        out_z_any = ((z < 0.0) | (z > (z_enemy_max + 10.0))).any(dim=1)           # [N] Z 越界
+        out_z_any = ((z < 0.0) | (z > (z_enemy_max + 5.0))).any(dim=1)           # [N] Z 越界
 
         origin_xy = self.terrain.env_origins[:, :2].unsqueeze(1)
         dxy = self.fr_pos[..., :2] - origin_xy
@@ -1521,17 +1579,22 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         nan_inf_any = ~torch.isfinite(self.fr_pos).all(dim=(1, 2))                # [N] NaN/Inf
 
         # 敌人抵达目标点
-        diff_e = self.enemy_pos[..., :2] - self._goal_e.unsqueeze(1)[..., :2]   # [N,E,2]
-        dist2_e_xy = diff_e.square().sum(dim=-1)                                # [N,E]
-        in_goal_active_xy = (dist2_e_xy < r2_goal) & (~self.enemy_frozen)       # [N,E]
-        enemy_goal_any = in_goal_active_xy.any(dim=1)                           # [N]
+        cen = self._enemy_centroid  # [N,3]
+        diff_c = cen[..., :2] - self._goal_e[..., :2]  # [N,2]
+        dist2_c = diff_c.square().sum(dim=-1)          # [N]
+        enemy_goal_any = dist2_c < r2_goal
         if enemy_goal_any.any():
             print("enemy_reach_goal!!!!!!")
 
         overshoot_any  = torch.zeros(N, dtype=torch.bool, device=device)  # [N]
         alive_mask = ~(success_all_enemies | out_z_any | out_xy_any | nan_inf_any | enemy_goal_any)  # [N]
+        idx = alive_mask.nonzero(as_tuple=False).squeeze(-1)
+        stage = self.friend_wave_stage[idx]
+        can_overshoot = stage >= (self.friend_wave_count - 1)
+
+        # if can_overshoot.any():
         if alive_mask.any():
-            tol = float(getattr(self.cfg, "overshoot_tol", 1.0))
+            tol = float(getattr(self.cfg, "overshoot_tol", 2.0))
             idx = alive_mask.nonzero(as_tuple=False).squeeze(-1)          # [n]
             friend_active = (~self.friend_frozen[idx])                    # [n,M]
             enemy_active  = (~self.enemy_frozen[idx])                     # [n,E]
@@ -1624,6 +1687,51 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
                 for k, v in term.items():
                     print(f"{k:<20}: {v}")
                 print("-----------------------------------")
+            # === 打印本次 reset 的 env 的 reward 各分量 episode 累积和 ===
+            # 注意：此时 episode_sums 里存的是“上一段 episode”的累计值
+            if len(self.episode_sums) > 0 and env_ids is not None and len(env_ids) > 0:
+                print("Reward components (sum over episode, per env; sum over agents):")
+                for name, buf in self.episode_sums.items():
+                    # buf: [num_envs, M]，先对 agent 维求和 → [num_envs]
+                    vals = buf[env_ids].sum(dim=1)  # 每个 env 的总和
+                    mean = vals.mean().item()
+                    vmin = vals.min().item()
+                    vmax = vals.max().item()
+                    print(f"  {name:<16}: mean={mean:10.3f}  min={vmin:10.3f}  max={vmax:10.3f}")
+                print("---------------------------------------------------------")
+            if len(env_ids) > 0 and len(self.episode_sums) > 0:
+                env0 = env_ids[0].item()
+                M = self.M
+
+                print(f"Reward components per agent for env {env0} (this episode):")
+                for name, buf in self.episode_sums.items():
+                    # buf: [N, M]
+                    row = buf[env0]  # [M]，这一 env 下每个 agent 的累计奖励
+                    # 打印成列表好看一点
+                    vals = row.detach().cpu().tolist()
+                    # 如果 agent 太多，可以只打印前几个
+                    # vals = vals[:10]
+                    print(f"  {name:<16}: {vals}")
+                print("---------------------------------------------------------")
+
+            # === 新增：打印拦截率（冻结敌机数 / 总敌机数） ===
+            if self.E > 0 and env_ids is not None and len(env_ids) > 0:
+                # enemy_frozen[env_ids]: [N_reset, E]，True 表示该敌机已被击落/冻结
+                frozen = self.enemy_frozen[env_ids]              # bool，[N_reset, E]
+                frozen_cnt = frozen.sum(dim=1)                   # [N_reset]
+                total = float(self.E)
+                rate = frozen_cnt.float() / total                # [N_reset]
+
+                print("Interception rate per env (frozen enemies / total enemies):")
+                for i_local, env_id in enumerate(env_ids.tolist()):
+                    c = int(frozen_cnt[i_local].item())
+                    r = rate[i_local].item()
+                    print(f"  Env {env_id}: {c} / {int(total)} = {r:.3f}")
+                print(
+                    f"  Summary: mean={rate.mean().item():.3f}  "
+                    f"min={rate.min().item():.3f}  max={rate.max().item():.3f}"
+                )
+                print("---------------------------------------------------------")
 
         N = len(env_ids)
         dev, dtype = self.device, self.fr_pos.dtype
@@ -1648,7 +1756,6 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
 
         # --------------- 敌机出生 ---------------
         self._spawn_enemy(env_ids)
-        # self._spawn_enemy_random(env_ids)
 
         # === 刷新敌团缓存（保证 _axis_hat / _enemy_centroid 与本轮出生一致）===
         self._refresh_enemy_cache()
@@ -1672,10 +1779,10 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         r_hat       = torch.stack([-f_hat[..., 1], f_hat[..., 0]], dim=-1)  # [N,2]
 
         # 2. 队形参数配置
-        agents_per_row = 15       # 每排数量 (建议 10)
-        lat_spacing    = 2.0      # 横向间隔 (同一排飞机间距)
-        row_spacing    = 5.0      # 纵向间隔 (排与排之间距，需>4m以避开水平FOV)
-        row_height_diff= 1.0      # 高度阶梯 (后排比前排高 1m)
+        agents_per_row = int(self.cfg.agents_per_row)       # 每排数量 (建议 10)
+        lat_spacing    = float(self.cfg.lat_spacing)      # 横向间隔 (同一排飞机间距)
+        row_spacing    = float(self.cfg.row_spacing)      # 纵向间隔 (排与排之间距，需>4m以避开水平FOV)
+        row_height_diff= float(self.cfg.row_height_diff)      # 高度阶梯 (后排比前排高 1m)
         base_altitude  = float(self.cfg.flight_altitude)
 
         # 3. 计算每个 Agent 的局部坐标 (M个)
@@ -1750,237 +1857,147 @@ class FastInterceptionSwarmMARLEnv(DirectMARLEnv):
         self._nz[env_ids] = 0.0
         # --------------- 友方出生 结束 ---------------
 
+        # -------- 分波发射初始化：只解冻第0波，其余波次从出生位置冻结等待发射 --------
+        N_reset = env_ids.shape[0]               # 本次要重置的环境个数
+        self.friend_wave_stage[env_ids] = 0
+        if self.friend_wave_enable and (self.friend_wave_count > 1):
+            self.friend_capture_pos[env_ids] = fr0   # [N_reset, M, 3]
+            # wave_idx[m]：第 m 架友机所属的波次（对所有 env 相同）
+            wave_idx = self.friend_wave_index.to(dev)   # [M]
 
+            # first_wave_mask[n, m] = True 表示：
+            # 第 n 个重置的 env 中，第 m 架友机属于“第 0 波”
+            # wave_idx == 0 -> [M]，unsqueeze(0) -> [1, M]，再广播到 [N_reset, M]
+            first_wave_mask = (wave_idx == 0).unsqueeze(0).expand(N_reset, self.M)  # [N_reset, M] bool
 
-        # # --------------- 友方出生 ---------------
-        # # 友方出生即面朝团中心一字排开（沿“朝向的左法向量”展开）
-        # # 仅用 XY 平面决定横队与朝向：axis_hat 指向“原点->质心”，所以面向质心用 -axis_hat
-        # axis_hat_xy = self._axis_hat[env_ids, :2]                     # [N,2]
-        # face_xy     = -axis_hat_xy
-        # face_norm   = torch.linalg.norm(face_xy, dim=-1, keepdim=True).clamp_min(1e-6)
-        # f_hat       = face_xy / face_norm                             # [N,2] 面向质心的单位向量
-
-        # # 横向排队方向 = 朝向的左法向量 r_hat = rot90ccw(f_hat) = [-fy, fx]
-        # r_hat = torch.stack([-f_hat[..., 1], f_hat[..., 0]], dim=-1)  # [N,2] 每个env一条“横向展开方向”。+r_hat方向：排队时“向左边扩展”的那一侧
-        # row_center = origins[:, :2]
-
-        # # 对称编号 …, -2, -1, 0, 1, 2, …
-        # idx = torch.arange(self.M, device=self.device).float() - (self.M - 1) / 2.0  # [M]
-        # offsets_xy = idx.view(1, self.M, 1) * float(self.cfg.formation_spacing) * r_hat.unsqueeze(1)          # [N,M,2]
-
-        # # 友机初始位置
-        # fr0 = torch.empty(N, self.M, 3, device=dev, dtype=self.fr_pos.dtype)
-        # fr0[..., :2] = row_center.unsqueeze(1) + offsets_xy
-        # fr0[...,  2] = origins[:, 2].unsqueeze(1) + float(self.cfg.flight_altitude)
-        # self.fr_pos[env_ids]   = fr0
-        # self.fr_vel_w[env_ids] = 0.0
-        # self.Vm[env_ids]       = 0.0
-
-        # # 初始化距离质心的距离
-        # centroid = self._enemy_centroid[env_ids]                     # [N,3]
-        # dist0 = torch.linalg.norm(self.fr_pos[env_ids] - centroid.unsqueeze(1), dim=-1)  # [N,M]
-        # self.prev_dist_centroid[env_ids] = dist0
-
-        # # 每架友机的初始航向/俯仰：直接指向“敌团质心”
-        # d = self._enemy_centroid[env_ids].unsqueeze(1) - self.fr_pos[env_ids]  # [N,M,3] (z-up)
-        # # yaw（z-up）
-        # psi0 = torch.atan2(d[..., 1], d[..., 0])
-        # psi0 = ((psi0 + math.pi) % (2.0 * math.pi)) - math.pi                  # wrap到(-π, π]，避免跳变
-        # self.psi_v[env_ids] = psi0          # 将zup系下的yaw赋值给了yup系下的yaw，存疑
-        # # pitch（y-up）：sin(theta) = z_w
-        # d_m = d / d.norm(dim=-1, keepdim=True).clamp_min(1e-9)      # 指向质心的单位方向向量
-        # sin_th = d_m[..., 2].clamp(-1.0 + 1e-6, 1.0 - 1e-6)
-        # theta0 = torch.asin(sin_th)         # zup系下的pitch
-        # self.theta[env_ids] = theta0
-        # # 云台重置（与机体保持一致指向质心）
-        # self._gimbal_yaw[env_ids]   = psi0
-        # self._gimbal_pitch[env_ids] = theta0
-
-        # # # z-up系
-        # # d = self._enemy_centroid[env_ids].unsqueeze(1) - self.fr_pos[env_ids]  # [N,M,3]
-        # # # --- yaw ---
-        # # yaw0 = torch.atan2(d[..., 1], d[..., 0])        # [N,M]
-        # # yaw0 = ((yaw0 + math.pi) % (2.0 * math.pi)) - math.pi   # wrap 到 [-pi, pi]
-        # # # --- pitch（仰角）---
-        # # sp_xy = torch.sqrt(d[...,0]**2 + d[...,1]**2).clamp_min(1e-9)
-        # # pitch0 = torch.atan2(d[...,2], sp_xy)
-        # # --- 写入状态 ---
-        # # self.psi_v[env_ids] = yaw0      # yaw_z
-        # # self.theta[env_ids] = pitch0    # pitch_z (elevation)
-        # # 云台重置（与机体保持一致指向质心）
-        # # self._gimbal_yaw[env_ids]   = yaw0
-        # # self._gimbal_pitch[env_ids] = pitch0
-
-        # # 初始化纵向过载等
-        # self._ny[env_ids] = 0.0
-        # self._nz[env_ids] = 0.0
-        # # --------------- 友方出生 ---------------
+            # 初始化冻结状态：
+            #   - 第 0 波：friend_frozen = False（可动）
+            #   - 其他波：friend_frozen = True（出生后立刻冻结在出生位置）
+            self.friend_frozen[env_ids] = ~first_wave_mask
+        else:
+            self.friend_frozen[env_ids] = False
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         N, M, E = self.num_envs, self.M, self.E
         dev, dtype = self.device, self.fr_pos.dtype
         eps = 1e-9
 
-        # ====================== 友机相对量（先做排序索引） ======================
-        # fr_pos, fr_vel_w: [N, M, 3]
-        pos_i = self.fr_pos.unsqueeze(2)                    # [N,M,1,3]
-        pos_j = self.fr_pos.unsqueeze(1)                    # [N,1,M,3]
-        dist_ij = torch.linalg.norm(pos_j - pos_i, dim=-1)   # [N,M,M] 友机i到友机j的欧氏距离
-        # print("1dist_ij:", dist_ij)
-        dist_ij += torch.eye(M, device=dev, dtype=dtype).unsqueeze(0) * 1e6  # [N,M,M] 自身距离设极大，避免排序选到自己。torch.eye(M, device=dev, dtype=dtype)是创建一个MxM的单位矩阵，然后unsqueeze(0)变成1xMxM，广播后加到dist_ij上
-        # print("fr_pos:", self.fr_pos)
-        # print("2dist_ij:", dist_ij)
-        # 获取每个友机视角下的“其他友机”排序索引（近到远）
-        sorted_idx = dist_ij.argsort(dim=-1)[:, :, :M-1]  # [N,M,M-1] 沿着最后一维把每个 (n,i,:) 这行从小到大排序，返回的是索引。[:, :, :M-1]意思是取前M-1个最近的友机索引（排除自己）
-        # print("sorted_idx:", sorted_idx)
-        # 按索引取“其他友机”的绝对位置/速度（后面再转相对）
+        # ====================== 1. 友机相对观测 (保持不变) ======================
+        pos_i = self.fr_pos.unsqueeze(2)   # [N,M,1,3]
+        pos_j = self.fr_pos.unsqueeze(1)   # [N,1,M,3]
+        dist_ij_raw = torch.linalg.norm(pos_j - pos_i, dim=-1)  # [N,M,M]
+
+        # 把"自己"和"冻结友机"推到排序末尾
+        large = torch.full_like(dist_ij_raw, 1e6)
+        eye = torch.eye(M, device=dev, dtype=torch.bool).unsqueeze(0)
+        friend_alive = (~self.friend_frozen)
+        both_alive = friend_alive.unsqueeze(1) & friend_alive.unsqueeze(2)
+        valid_pair = (~eye) & both_alive
+        dist_ij = torch.where(valid_pair, dist_ij_raw, large)
+
+        # 排序：近 -> 远
+        sorted_idx = dist_ij.argsort(dim=-1)[:, :, :M-1]  # [N,M,M-1]
+
+        # Gather 友机位置/速度
         other_pos_sorted = torch.gather(
             self.fr_pos.unsqueeze(1).expand(N, M, M, 3),
             2, sorted_idx.unsqueeze(-1).expand(-1, -1, -1, 3)
-        )  # [N,M,M-1,3] gather函数是根据sorted_idx索引，从self.fr_pos中沿着第2维取值，得到每个友机看到的其他友机的位置，按距离排序
-        # print("other_pos_sorted:", other_pos_sorted)
+        )
         other_vel_sorted = torch.gather(
             self.fr_vel_w.unsqueeze(1).expand(N, M, M, 3),
             2, sorted_idx.unsqueeze(-1).expand(-1, -1, -1, 3)
-        )  # [N,M,M-1,3]
+        )
 
-        # —— 相对位置：self 记 0，其它友机用 j-i —— 
-        self_pos = self.fr_pos.unsqueeze(2)  # [N,M,1,3]
-        self_vel = self.fr_vel_w.unsqueeze(2)  # [N,M,1,3]
-        zeros_self = torch.zeros_like(self_pos)  # [N,M,1,3]
-        rel_pos_sorted = other_pos_sorted - self_pos  # [N,M,M-1,3]
-        rel_vel_sorted = other_vel_sorted - self_vel  # [N,M,M-1,3]
-        all_pos_sorted = torch.cat([zeros_self, rel_pos_sorted], dim=2).reshape(N, M, 3 * M)  # [N,M,3M]
-        all_vel_sorted = torch.cat([zeros_self, rel_vel_sorted], dim=2).reshape(N, M, 3 * M)  # [N,M,3M]
-        # print("rel_pos_sorted:",rel_pos_sorted)
-        # print("all_pos_sorted:",all_pos_sorted)
-        # 归一化
-        rel_pos_sorted_norm = torch.linalg.norm(rel_pos_sorted, dim=-1, keepdim=True).clamp_min(eps)  # [N,M,M-1,1]
-        rel_pos_sorted_unit = rel_pos_sorted / rel_pos_sorted_norm  # [N,M,M-1,3]
-        all_pos_sorted_norm = torch.cat([zeros_self, rel_pos_sorted_unit], dim=2).reshape(N, M, 3 * M)  # [N,M,3M]
-        rel_vel_sorted_norm = torch.linalg.norm(rel_vel_sorted, dim=-1, keepdim=True).clamp_min(eps)  # [N,M,M-1,1]
-        rel_vel_sorted_unit = rel_vel_sorted / rel_vel_sorted_norm  # [N,M,M-1,3]
-        all_vel_sorted_norm = torch.cat([zeros_self, rel_vel_sorted_unit], dim=2).reshape(N, M, 3 * M)  # [N,M,3M]
+        # 转为相对量
+        self_pos = self.fr_pos.unsqueeze(2)
+        self_vel = self.fr_vel_w.unsqueeze(2)
+        zeros_self = torch.zeros_like(self_pos)
 
-        # ====================== 敌机方向（单位向量：敌 - 友）与相对速度 ======================
+        rel_pos_sorted = other_pos_sorted - self_pos
+        rel_vel_sorted = other_vel_sorted - self_vel
+
+        # 拼接友机信息 [N, M, 3*(M-1) * 2] -> [N, M, 6(M-1)]
+        all_pos_sorted = torch.cat([zeros_self, rel_pos_sorted], dim=2).reshape(N, M, 3 * M)
+        all_vel_sorted = torch.cat([zeros_self, rel_vel_sorted], dim=2).reshape(N, M, 3 * M)
+
+        # ====================== 2. 单目标导引头观测 ======================
+        # 目标：只输出视野中心那个敌机的方向向量 (3维) + 锁定标志 (1维)
         if E > 0:
-            # 1) 可见 + 未冻结 mask
-            vis_fe = self._gimbal_enemy_visible_mask()                                     # [N,M,E]
-            # 2) 指向敌机的单位向量（只对“可见且未冻结”的敌机有值）
-            rel_all  = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2)              # [N,M,E,3]
-            dist_all = torch.linalg.norm(rel_all, dim=-1, keepdim=True).clamp_min(eps)     # [N,M,E,1]
-            e_hat_all = (rel_all / dist_all) * vis_fe.unsqueeze(-1).float()                # [N,M,E,3]
-            # e_hat_all = (rel_all / dist_all) * (~self.enemy_frozen).unsqueeze(1).unsqueeze(-1).float()  # [N,M,E,3]
-            e_hat_flat = e_hat_all.reshape(N, M, 3 * E)                                    # [N,M,3E]
-            # 3) 相对速度：v_enemy - v_friend_i，同样只对“可见且未冻结”的敌机保留
-            rel_enemy_vel = (
-                self.enemy_vel.unsqueeze(1)        # [N,1,E,3]
-                - self.fr_vel_w.unsqueeze(2)       # [N,M,1,3]
-            )                                      # [N,M,E,3]
-            rel_enemy_vel = (rel_enemy_vel * vis_fe.unsqueeze(-1).float())  # [N,M,E,3]
-            # rel_enemy_vel = rel_enemy_vel * (~self.enemy_frozen).unsqueeze(1).unsqueeze(-1).float()  # [N,M,E,3]
-            rel_enemy_vel = rel_enemy_vel.reshape(N, M, 3 * E)              # [N,M,3E]
-            # print("self.enemy_vel:",self.enemy_vel.norm(dim=-1))
-            # print("self.fr_vel_w:",self.fr_vel_w.norm(dim=-1))
-            # print("rel_enemy_vel:",rel_enemy_vel.norm(dim=-1))
-            # 归一化
-            rel_enemy_vel_norm = torch.linalg.norm(rel_enemy_vel, dim=-1, keepdim=True).clamp_min(eps)  # [N,M,1]
-            rel_enemy_vel_unit = rel_enemy_vel / rel_enemy_vel_norm  # [N,M,3E]
-            rel_enemy_vel_unit_flat = rel_enemy_vel_unit.reshape(N, M, 3 * E)  # [N,M,3E]
+            # --- A. 基础几何计算 ---
+            vis_fe = self._gimbal_enemy_visible_mask()  # [N, M, E]
+            
+            rel_all  = self.enemy_pos.unsqueeze(1) - self.fr_pos.unsqueeze(2) # [N,M,E,3]
+            dist_all = torch.linalg.norm(rel_all, dim=-1, keepdim=True).clamp_min(eps)
+            dir_all  = rel_all / dist_all  # [N,M,E,3] 所有敌机的单位向量
 
-            # print("vis_fe:",vis_fe)
-            # print("enemy_pos:",self.enemy_pos)
-            # print("rel_all:",rel_all)
-            # print("e_hat_all:",e_hat_all)
-            # print("rel_enemy_vel:",rel_enemy_vel)
+            # --- B. 计算与云台光轴的夹角 ---
+            cam_dir = self._dir_from_yaw_pitch(self._gimbal_yaw, self._gimbal_pitch).unsqueeze(2) # [N,M,1,3]
+            # 点积求夹角余弦
+            cos_ang = (cam_dir * dir_all).sum(dim=-1).clamp(-1.0+1e-6, 1.0-1e-6)
+            angle   = torch.acos(cos_ang) # [N,M,E]
+
+            # --- C. 筛选逻辑 (Seeker Logic) ---
+            # 1. 屏蔽：把视野外(不可见)的敌机角度设为无穷大
+            large_angle = 100.0
+            angle_masked = torch.where(vis_fe, angle, torch.tensor(large_angle, device=dev))
+
+            # 2. 优选：找到角度最小的那个敌机索引
+            # min_vals: [N, M] 最小角度值
+            # min_inds: [N, M] 对应敌机的索引
+            min_vals, min_inds = angle_masked.min(dim=-1)
+
+            # 3. 判定：是否真的锁定? (如果最小角度依然很大，说明视野全是空的)
+            has_lock = (min_vals < (large_angle - 1.0)) # [N, M] Bool
+
+            # 4. 提取：使用索引抓取对应的 3D 向量
+            # min_inds 形状 [N, M] -> 扩展为 [N, M, 1, 3] 以适配 dir_all
+            gather_idx = min_inds.unsqueeze(-1).unsqueeze(-1).expand(N, M, 1, 3)
+            # best_vec: [N, M, 3] (这就是"可能"被锁定的敌机方向)
+            best_vec = torch.gather(dir_all, 2, gather_idx).squeeze(2)
+
+            # --- D. 最终输出掩码 ---
+            # 如果没锁定(has_lock=False)，强制输出 0 向量
+            single_target_vec = torch.where(
+                has_lock.unsqueeze(-1), 
+                best_vec, 
+                torch.zeros_like(best_vec)
+            )
+            
+            # 锁定标志位 (给神经网络明确信号：现在是有目标状态还是盲飞状态)
+            lock_feat = has_lock.unsqueeze(-1).float() # [N, M, 1]
         else:
-            e_hat_flat    = torch.zeros((N, M, 0), device=dev, dtype=dtype)
-            rel_enemy_vel = torch.zeros((N, M, 0), device=dev, dtype=dtype)
-            rel_enemy_vel_unit_flat = torch.zeros((N, M, 0), device=dev, dtype=dtype)
+            single_target_vec = torch.zeros((N, M, 3), device=dev, dtype=dtype)
+            lock_feat         = torch.zeros((N, M, 1), device=dev, dtype=dtype)
 
-        # ====================== 3. 战术引导观测 (Tactical Obs) ======================
-        # 敌团质心
-        cen = self._enemy_centroid                   # [N, 3]
-        rel_c = cen.unsqueeze(1) - self.fr_pos       # [N,M,3]
-        dist_c = torch.linalg.norm(rel_c, dim=-1, keepdim=True).clamp_min(eps)  # [N,M,1]
-        e_hat_c = rel_c / dist_c                     # [N,M,3]
-        dist_c_norm = (dist_c / self.cfg.enemy_cluster_ring_radius).clamp(-1.0, 1.0)  # [N,M,1] 按你原来的归一化半径
+        # ====================== 3. 自身状态 & 战术引导 ======================
+        self_pos_abs = self.fr_pos
+        self_vel_abs = self.fr_vel_w
 
-        # ---------- 战术覆盖偏移：两排 * 15 架 ----------
-        M = self.M
-        agents_per_row = 15
+        # 敌团质心 (Search Guidance)：当 lock_feat=0 时，Agent 依赖这个飞
+        cen = self._enemy_centroid
+        rel_c = cen.unsqueeze(1) - self.fr_pos
+        dist_c = torch.linalg.norm(rel_c, dim=-1, keepdim=True).clamp_min(eps)
+        e_hat_c = rel_c / dist_c  # [N, M, 3]
 
-        idx = torch.arange(M, device=dev, dtype=torch.long)  # [M]
-        row_idx = (idx // agents_per_row).float()            # [M] 0 = 第一排, 1 = 第二排
-        col_idx = (idx % agents_per_row).float()             # [M] 0 .. 14
+        # Agent ID (One-hot)
+        agent_id_feat = self._agent_id_onehot.expand(N, -1, -1).to(dtype=dtype)
 
-        # 左右展开因子：[-1, 1]，中间列 ~ 0
-        center_col = (agents_per_row - 1) / 2.0              # 7.0
-        col_factor = (col_idx - center_col) / center_col     # [M], 左负右正
+        # ====================== 4. 拼接总观测 ======================
+        obs_each = torch.cat(
+            [
+                all_pos_sorted,          # 3M
+                all_vel_sorted,          # 3M
+                self_pos_abs,            # 3
+                self_vel_abs,            # 3
+                e_hat_c,                 # 3  <-- 盲飞时的导航
+                dist_c,                  # 1
+                single_target_vec,       # 3  <-- 这里的维度现在固定为 3 了
+                lock_feat,               # 1  <-- 告诉网络"single_target_vec"是否有效
+                agent_id_feat,           # M
+            ],
+            dim=-1,
+        )
 
-        # 垂直偏移：第一排略高，第二排略低
-        z_amp = float(getattr(self.cfg, "tactical_z_amp", 7.0))
-
-        row_sign = torch.where(
-            row_idx < 0.5,
-            torch.tensor(1.0, device=dev, dtype=dtype),   # 第一排：+z
-            torch.tensor(-1.0, device=dev, dtype=dtype),  # 第二排：-z
-        )                                                # [M]
-        row_z = row_sign * z_amp                         # [M]
-
-        # 沿着“敌团左右方向” r_hat 展开水平偏移
-        axis_hat_xy = self._axis_hat[:, :2]                     # [N,2] goal->centroid 的投影
-        face_xy = axis_hat_xy
-        face_norm = torch.linalg.norm(face_xy, dim=-1, keepdim=True).clamp_min(1e-6)
-        f_hat = face_xy / face_norm                             # [N,2] 指向敌团
-        r_hat = torch.stack([-f_hat[..., 1], f_hat[..., 0]], dim=-1)  # [N,2] 左右方向
-
-        r3 = torch.cat([r_hat, torch.zeros(N, 1, device=dev, dtype=dtype)], dim=-1)  # [N,3]
-
-        # 水平展开振幅，根据敌团宽度大概给一个数，
-        # 后面你也可以用 WIDTH_MAP/E 来动态调整
-        lat_amp = float(getattr(self.cfg, "tactical_lat_amp", 20.0))
-        col_lat = col_factor * lat_amp                       # [M]
-
-        # -------- broadcast 到 [N,M,3]，得到每个 agent 的战术偏移 ----------
-        z_hat = torch.tensor([0.0, 0.0, 1.0], device=dev, dtype=dtype).view(1, 1, 3)
-
-        row_z_ = row_z.view(1, M, 1)                         # [1,M,1] → [N,M,1] 广播
-        col_lat_ = col_lat.view(1, M, 1)                     # [1,M,1]
-
-        z_off = row_z_ * z_hat                               # [N,M,3] 竖直偏移
-        lat_off = col_lat_ * r3.view(N, 1, 3)                # [N,M,3] 左右偏移
-
-        offset_tac = z_off + lat_off                         # [N,M,3]
-
-        # 战术瞄准点 = 质心 + 战术偏移（对每个 env 相同质心，对每个 agent 不同偏移）
-        tac_target = cen.unsqueeze(1) + offset_tac           # [N,M,3]
-
-        # 从友机位置指向战术瞄准点
-        rel_tac = tac_target - self.fr_pos                   # [N,M,3]
-        dist_tac = torch.linalg.norm(rel_tac, dim=-1, keepdim=True).clamp_min(eps)  # [N,M,1]
-        e_hat_tactical = rel_tac / dist_tac                  # [N,M,3]
-        dist_tac_norm = (dist_tac / self.cfg.enemy_cluster_ring_radius).clamp(-1.0, 1.0)  # [N,M,1]
-
-
-        # ====================== 拼接总观测 ======================
-        obs_each = torch.cat([all_pos_sorted, all_vel_sorted, e_hat_c, dist_c, e_hat_flat, rel_enemy_vel], dim=-1) # 部分未归一化
-
-        # 归一化的观测
-        # obs_each = torch.cat([all_pos_sorted_norm, all_vel_sorted_norm, e_hat_c, dist_c_norm, e_hat_flat, rel_enemy_vel_unit_flat], dim=-1)
-
-        # # 战术覆盖观测
-        # obs_each = torch.cat(
-        #     [
-        #         all_pos_sorted_norm,         # 3M
-        #         all_vel_sorted_norm,         # 3M
-        #         e_hat_tactical,              # 3
-        #         dist_tac_norm,               # 1
-        #         e_hat_flat,                  # 3E
-        #         rel_enemy_vel_unit_flat,     # 3E
-        #     ],
-        #     dim=-1,
-        # )  # [N,M, 6M + 6E + 8]
         obs_dict = {ag: obs_each[:, i, :] for i, ag in enumerate(self.possible_agents)}
 
         return obs_dict
