@@ -75,7 +75,7 @@ agent:
     max_lr: 0.0001
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
-  value_preprocessor: RunningStandardScaler
+  value_preprocessor: RunningStandardScaler     # 将 Critic 网络预测的价值（Value）和真实回报（Return/Target）归一化
   # value_preprocessor: null
   value_preprocessor_kwargs: null
   random_timesteps: 0
@@ -83,7 +83,7 @@ agent:
   grad_norm_clip: 1.0
   ratio_clip: 0.2
   value_clip: 0.2
-  clip_predicted_values: True
+  clip_predicted_values: True           # 限制critic每一步更新幅度。限制了Critic网络在一次更新（Update）中，对同一状态的价值预测发生剧烈改变
   entropy_loss_scale: 0.001
   value_loss_scale: 1.0
   # kl_threshold: 0.02
