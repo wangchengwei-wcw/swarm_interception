@@ -3,6 +3,7 @@ import torch
 
 @torch.jit.script
 def quat_to_ang_between_z_body_and_z_world(quat: torch.Tensor) -> torch.Tensor:
+    """用四元数直接算“机体 z 轴与世界 z 轴的夹角”"""
     x, y = quat[:, 1], quat[:, 2]
     z_body_z = 1 - 2 * (x**2 + y**2)
     return torch.acos(torch.clamp(z_body_z, -1.0, 1.0))

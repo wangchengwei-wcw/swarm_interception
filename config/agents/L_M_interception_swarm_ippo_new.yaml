@@ -25,11 +25,22 @@ models:
     network:
       - name: net
         input: STATES
-        # layers: [512, 512, 256, 256, 128, 128]
         layers: [512, 256, 128, 64]
-        # layers: [1024, 512, 256, 128]
         activations: elu
     output: ACTIONS
+  # value:  # see deterministic_model parameters
+  #   class: AttentionValueModel  # custom attention-based critic
+  #   clip_actions: False
+  #   k_friends: null
+  #   k_targets: null
+  #   embed_dim: 128                  # 将每个实体（友机、敌机、自己）的原始数据（位置、速度等）映射到的特征向量长度。决定了模型对单个实体的表达能力。
+  #   attn_heads: 4                   # 多头注意力机制中的头数。更多的头可以让模型从不同的角度关注输入数据，提高表达能力，但也增加了计算复杂度。
+  #   attn_layers: 1                  # 多头自注意力机制的层数。堆叠多少层注意力模块。更多的层可以让模型捕捉更复杂的关系，但也增加了计算复杂度和过拟合风险。决定了推理的深度。
+  #   ff_multiplier: 2.0              # 前馈网络隐藏层相对于嵌入维度的扩展倍数。决定了前馈网络的容量和表达能力。目前未使用
+  #   mlp_hidden: [128, 64]           # 注意力模块后面的 MLP 层的隐藏单元数列表。决定了最终价值估计的表达能力。
+  #   dropout: 0.05                   # 注意力模块中的 dropout 比例。用于防止过拟合。随机丢弃神经元的概率。
+
+  # MLP baseline value network (uncomment to compare with attention model)
   value:  # see deterministic_model parameters
     class: DeterministicMixin
     clip_actions: False
@@ -67,12 +78,16 @@ agent:
 
   discount_factor: 0.99
   lambda: 0.95
-  learning_rate: 0.00005
+  # learning_rate: 0.00005
+  learning_rate: 0.00002  # 从5e-5降到2e-5，注意力模型需要更保守的学习率
   learning_rate_scheduler: KLAdaptiveLR
   # learning_rate_scheduler: null
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.01
     max_lr: 0.0001
+    # kl_threshold: 0.008   # 稍微放宽到0.008，平衡稳定性和收敛速度
+    # max_lr: 0.00005       # 保持保守的最大学习率
+    # min_lr: 0.000005      # 添加最小学习率，防止学习率降得太低
   state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler     # 将 Critic 网络预测的价值（Value）和真实回报（Return/Target）归一化
@@ -84,7 +99,7 @@ agent:
   ratio_clip: 0.2
   value_clip: 0.2
   clip_predicted_values: True           # 限制critic每一步更新幅度。限制了Critic网络在一次更新（Update）中，对同一状态的价值预测发生剧烈改变
-  entropy_loss_scale: 0.001
+  entropy_loss_scale: 0.002
   value_loss_scale: 1.0
   # kl_threshold: 0.02
   rewards_shaper_scale: 1.0
